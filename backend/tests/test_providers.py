@@ -522,3 +522,29 @@ def test_non_timeout_url_error_remains_sanitized_network_failure(monkeypatch):
     with pytest.raises(ProviderError) as captured:
         transport(monkeypatch, response)._fetch_json("https://fixture.invalid/?secret=private", ImmediateEvent())
     assert str(captured.value) == "The provider could not be reached. Please retry."
+
+
+def test_ingresso_captures_url_key_without_replacing_event_id_or_numeric_session_route():
+    def route(url, *_):
+        if "/events/" in url:
+            return [{"id": 12345, "title": "Film", "urlKey": "film-string-identifier"}]
+        if "/theaters/" in url:
+            return []
+        assert "/sessions/event/12345/partnership/" in url
+        assert "film-string-identifier" not in url
+        return []
+    service = FixtureService(route, ingresso_partnerships=["warner"])
+    result = service.showtimes({**CONNECTION, "provider_code": "INGRESSO"}, {"12345"}, threading.Event())
+    assert result.movies[0]["id"] == "12345"
+    assert result.movies[0]["url_key"] == "film-string-identifier"
+    assert any("/sessions/event/12345/" in call[0] for call in service.calls)
+
+
+@pytest.mark.parametrize("extra,has_alias,expected", [({}, False, None), ({"urlKey": None}, True, None), ({"urlKey": ""}, True, None)])
+def test_ingresso_omitted_url_key_remains_omitted_but_explicit_empty_is_preserved(extra, has_alias, expected):
+    def route(url, *_):
+        return [{"id": "123", "title": "Film", **extra}] if "/events/" in url else []
+    result = FixtureService(route, ingresso_partnerships=["warner"]).catalog({**CONNECTION, "provider_code": "INGRESSO"}, threading.Event())
+    assert ("url_key" in result.movies[0]) is has_alias
+    if has_alias:
+        assert result.movies[0]["url_key"] == expected

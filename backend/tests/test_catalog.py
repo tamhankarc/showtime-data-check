@@ -172,3 +172,30 @@ def test_group_updates_chunk_without_a_global_catalog_limit(db):
     assert sum(statement.startswith("select") for statement in statements) <= 2
     assert sum(statement.startswith("update movie_groups") for statement in statements) == 2
     assert not any(group_state(db).values())
+
+
+def test_ingresso_alias_updates_preserve_numeric_identity_manual_group_and_omission(db):
+    db.add(MovieGroup(id=1, country_code="BR", name="Manually combined"))
+    db.flush()
+    add_movie(db, 1, "12345", 1, connection_id=2, manual=True)
+    db.commit()
+    connection = db.get(Connection, 2)
+    upsert_movies(db, connection, [{"id": "12345", "name": "Film", "url_key": "film-url-key"}])
+    movie = db.get(ProviderMovie, 1)
+    assert (movie.id, movie.external_id, movie.group_id, movie.manually_grouped, movie.url_key) == (
+        1, "12345", 1, True, "film-url-key")
+    upsert_movies(db, connection, [{"id": "12345", "name": "Updated Film"}])
+    assert movie.url_key == "film-url-key"
+    upsert_movies(db, connection, [{"id": "12345", "name": "Film", "url_key": "x" * 600}])
+    assert len(movie.url_key) == 500
+    # An explicitly supplied empty/null alias clears it; omission never does.
+    upsert_movies(db, connection, [{"id": "12345", "name": "Film", "url_key": None}])
+    assert movie.url_key is None and movie.group_id == 1
+    assert db.scalar(select(func.count()).select_from(ProviderMovie)) == 1
+    assert db.scalar(select(func.count()).select_from(MovieGroup)) == 1
+
+
+def test_other_providers_do_not_accept_ingresso_only_url_keys(db):
+    connection = db.get(Connection, 1)
+    upsert_movies(db, connection, [{"id": "velox-id", "name": "Velox film", "url_key": "not-an-ingresso-key"}])
+    assert db.scalar(select(ProviderMovie)).url_key is None

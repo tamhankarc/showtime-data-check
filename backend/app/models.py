@@ -51,6 +51,7 @@ class ProviderMovie(Base):
     external_id: Mapped[str] = mapped_column(String(160))
     name: Mapped[str] = mapped_column(String(500))
     original_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    url_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     release_date: Mapped[datetime | None] = mapped_column(Date, nullable=True)
     parent_external_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     group_id: Mapped[int] = mapped_column(ForeignKey("movie_groups.id"), index=True)

@@ -491,11 +491,14 @@ class ProviderService:
         for partnership in partnerships:
             suffix = urllib.parse.quote(partnership, safe="")
             for item in _list(self._fetch_json(f"{INGRESSO_BASE}/v0/events/partnership/{suffix}", cancel)):
+                alias = {"url_key": _text(item.get("urlKey"))[:500] or None} if "urlKey" in item else {}
                 movie = _movie(item.get("id"), item.get("title") or item.get("originalTitle"),
-                               item.get("premiereDate"), item.get("originalTitle"), partnerships=[partnership])
+                               item.get("premiereDate"), item.get("originalTitle"), partnerships=[partnership], **alias)
                 if movie:
                     known = movies.setdefault(movie["id"], movie)
                     known["partnerships"] = sorted(set(known["partnerships"]) | {partnership})
+                    if movie.get("url_key"):
+                        known["url_key"] = movie["url_key"]
                     available.setdefault(movie["id"], set()).add(partnership)
             for item in _list(self._fetch_json(f"{INGRESSO_BASE}/v0/theaters/partnership/{suffix}", cancel)):
                 theater = self._ingresso_theater(item, connection)

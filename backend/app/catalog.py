@@ -85,6 +85,8 @@ def upsert_movies(db, connection, movies, complete=True):
             records[external_id] = row
         row.name, row.active = item["name"][:500], True
         row.original_name = str(item.get("original_name") or "")[:500] or None
+        if connection.provider_code == "INGRESSO" and "url_key" in item:
+            row.url_key = str(item.get("url_key") or "").strip()[:500] or None
         row.release_date = parse_day(item.get("release"))
         row.parent_external_id = str(item.get("parent_id") or "")[:160] or None
     db.add_all(new_movies)

@@ -1,6 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, items, send } from "@/lib/api";
+import { providerMovieIdentifier, providerMovieLabel } from "@/lib/search";
+import { referenceListQuery } from "@/lib/reference";
 import type { Bootstrap, ListPage, RecordData } from "@/lib/types";
 import { Combobox } from "./Combobox";
 import { Empty, ErrorNotice, GenericLogo, Pagination, Status } from "./Shared";
@@ -60,6 +62,7 @@ export function Management({
   const [search, setSearch] = useState("");
   const [exact, setExact] = useState(false);
   const [status, setStatus] = useState("");
+  const [showInactiveTheaters, setShowInactiveTheaters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -81,20 +84,22 @@ export function Management({
     setError("");
     setSuccess("");
     setStatus("");
+    setShowInactiveTheaters(false);
   }, [page]);
   const load = useCallback(async () => {
     const generation = ++loadSequence.current;
     setLoading(true);
     setError("");
-    const params = new URLSearchParams({
+    const params = referenceListQuery({
+      resource,
       q: search,
-      exact: String(exact),
-      page: String(currentPage),
-      page_size: "50",
+      exact,
+      page: currentPage,
+      country,
+      provider,
+      status,
+      showInactiveTheaters,
     });
-    if (country) params.set("country", country);
-    if (provider) params.set("provider", provider);
-    if (status) params.set("status", status);
     try {
       const loaded = await api<ListPage<RecordData>>(`${resource}?${params}`);
       if (generation === loadSequence.current) {
@@ -106,7 +111,16 @@ export function Management({
     } finally {
       if (generation === loadSequence.current) setLoading(false);
     }
-  }, [resource, country, search, exact, currentPage, provider, status]);
+  }, [
+    resource,
+    country,
+    search,
+    exact,
+    currentPage,
+    provider,
+    status,
+    showInactiveTheaters,
+  ]);
   useEffect(() => {
     const timer = setTimeout(
       () => {
@@ -400,14 +414,20 @@ export function Management({
         <div className="fields">
           <div className="field wide-field">
             <label htmlFor="management-search">
-              {resource === "theaters" || resource === "provider-theaters"
-                ? "Name, ID, address, city or postal code"
-                : "Search reference data"}
+              {resource === "theaters"
+                ? "Name, provider ID, address, city or postal code"
+                : resource === "provider-theaters"
+                  ? "Name, ID, address, city or postal code"
+                  : "Search reference data"}
             </label>
             <input
               id="management-search"
               value={search}
-              placeholder="Search…"
+              placeholder={
+                resource === "theaters"
+                  ? "Name, provider ID, address, city or postal code…"
+                  : "Search…"
+              }
               onChange={(e) => {
                 setSearch(e.target.value);
                 setCurrentPage(1);
@@ -425,6 +445,19 @@ export function Management({
             />
             Exact match
           </label>
+          {resource === "theaters" && (
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={showInactiveTheaters}
+                onChange={(event) => {
+                  setShowInactiveTheaters(event.target.checked);
+                  setCurrentPage(1);
+                }}
+              />
+              Show inactive theaters
+            </label>
+          )}
           {resource !== "countries" && (
             <Combobox
               label="Country"
@@ -510,6 +543,7 @@ export function Management({
                     ) : resource === "theaters" ? (
                       <>
                         <th>Theater</th>
+                        <th>Provider IDs</th>
                         <th>Chain</th>
                         <th>Location</th>
                         <th>Coordinates / website</th>
@@ -576,7 +610,7 @@ export function Management({
                             {((row.provider_ids || []) as RecordData[]).map(
                               (id) => (
                                 <small key={text(id.id)}>
-                                  {text(id.name)} ({text(id.external_id)}) ·{" "}
+                                  {providerMovieLabel(id)} ·{" "}
                                   {text(id.provider_code)}
                                 </small>
                               ),
@@ -597,13 +631,29 @@ export function Management({
                               <GenericLogo name={text(row.name)} />
                               <div>
                                 <strong>{text(row.name)}</strong>
-                                <small>
-                                  Theater #{text(row.id)} ·{" "}
-                                  {text(row.country_code)}
-                                </small>
+                                <small>{text(row.country_code)}</small>
                                 <small>Generic logo</small>
                               </div>
                             </div>
+                          </td>
+                          <td>
+                            {Array.isArray(row.provider_ids) &&
+                            row.provider_ids.length
+                              ? (row.provider_ids as RecordData[]).map(
+                                  (identity) => (
+                                    <div
+                                      key={`${text(identity.provider_code)}-${text(identity.external_id)}`}
+                                    >
+                                      <strong>
+                                        {text(identity.provider_code)}
+                                      </strong>
+                                      <small>
+                                        {text(identity.external_id)}
+                                      </small>
+                                    </div>
+                                  ),
+                                )
+                              : "—"}
                           </td>
                           <td>{text(row.chain) || "—"}</td>
                           <td>
@@ -746,9 +796,7 @@ export function Management({
                       }
                     />
                     <span>
-                      <strong>
-                        {text(id.name)} ({text(id.external_id)})
-                      </strong>
+                      <strong>{providerMovieLabel(id)}</strong>
                       <small>{text(id.provider_code)}</small>
                     </span>
                   </label>
@@ -764,7 +812,7 @@ export function Management({
                   detail: ((row.provider_ids || []) as RecordData[])
                     .map(
                       (id) =>
-                        `${text(id.provider_code)} ${text(id.external_id)}`,
+                        `${text(id.provider_code)} ${providerMovieIdentifier(id)}`,
                     )
                     .join(", "),
                 })}

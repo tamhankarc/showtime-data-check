@@ -17,6 +17,7 @@ from .catalog import generic_initial
 from .config import Settings
 from .db import make_engine
 from .jobs import JobManager
+from .migrations import initialize_schema
 from .results import filtered, metrics, theater_rows, usable_url, xlsx_export
 from .security import COOKIE, authenticate, require_admin, session_user
 
@@ -58,7 +59,7 @@ def create_app(settings=None, provider_service=None, engine=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        models.Base.metadata.create_all(engine)
+        initialize_schema(engine)
         from .providers import ProviderService
         app.state.jobs = JobManager(sessions, settings, provider_service or ProviderService(settings))
         yield
@@ -164,7 +165,7 @@ def create_app(settings=None, provider_service=None, engine=None):
         statement = statement.where(exists(member_select))
         group_columns = [models.MovieGroup.name, models.MovieGroup.id]
         member_columns = [models.ProviderMovie.name, models.ProviderMovie.original_name,
-                          models.ProviderMovie.external_id, models.ProviderMovie.id]
+                          models.ProviderMovie.external_id, models.ProviderMovie.id, models.ProviderMovie.url_key]
         if q.strip():
             statement = statement.where(or_(list_search(q, group_columns, exact),
                 exists(member_select.where(list_search(q, member_columns, exact)))))
@@ -182,7 +183,7 @@ def create_app(settings=None, provider_service=None, engine=None):
             for member, connection in db.execute(members):
                 buckets[member.group_id].append({"id": member.id, "provider_code": connection.provider_code,
                     "external_id": member.external_id, "name": member.name,
-                    "original_name": member.original_name, "active": member.active})
+                    "original_name": member.original_name, "url_key": member.url_key, "active": member.active})
         return {"items": [{**row_dict(group), "provider_ids": buckets[group.id]} for group in groups], **metadata}
 
     @app.get("/api/movies")
@@ -204,7 +205,7 @@ def create_app(settings=None, provider_service=None, engine=None):
         if not include_inactive:
             statement = statement.where(models.ProviderMovie.active.is_(True), models.Connection.enabled.is_(True))
         search_columns = [models.ProviderMovie.name, models.ProviderMovie.original_name,
-                          models.ProviderMovie.external_id, models.ProviderMovie.id,
+                          models.ProviderMovie.external_id, models.ProviderMovie.id, models.ProviderMovie.url_key,
                           models.MovieGroup.name, models.MovieGroup.id]
         if q.strip():
             statement = statement.where(list_search(q, search_columns, exact))
@@ -406,7 +407,8 @@ def create_app(settings=None, provider_service=None, engine=None):
     @app.get("/api/{resource}")
     def reference_list(resource: str, country: str | None = None, provider: str | None = None,
                        q: str = "", exact: bool = False, page: int = 1, page_size: int = 200,
-                       status: str | None = None, db=Depends(db_session), current=Depends(user)):
+                       status: str | None = None, include_inactive: bool = False,
+                       db=Depends(db_session), current=Depends(user)):
         if resource not in resources:
             raise HTTPException(404, "Page not found.")
         model = resources[resource]
@@ -444,6 +446,8 @@ def create_app(settings=None, provider_service=None, engine=None):
         else:
             search_columns = [model.name, model.id, model.address, model.city, model.region, model.postal_code, model.chain]
             order_columns = [func.lower(model.name), model.id]
+            if not include_inactive:
+                statement = statement.where(model.active.is_(True))
         if country and country_column is not None:
             statement = statement.where(or_(country_column == country, country_column == "") if resource == "format-mappings"
                                          else country_column == country)
@@ -461,11 +465,30 @@ def create_app(settings=None, provider_service=None, engine=None):
                     matching = matching.where(models.Connection.country_code == model.code)
                 statement = statement.where(exists(matching))
         if q.strip():
-            statement = statement.where(list_search(q, search_columns, exact))
+            search_condition = list_search(q, search_columns, exact)
+            if resource == "theaters":
+                identity_match = select(models.ProviderTheater.id).join(
+                    models.Connection, models.ProviderTheater.connection_id == models.Connection.id).where(
+                        models.ProviderTheater.theater_id == model.id,
+                        list_search(q, [models.ProviderTheater.external_id, models.Connection.provider_code], exact))
+                search_condition = or_(search_condition, exists(identity_match))
+            statement = statement.where(search_condition)
         statement = statement.order_by(*list_order(q, search_columns), *order_columns)
         statement, metadata = list_page(db, statement, page, page_size)
         output = []
-        for result in db.execute(statement):
+        page_rows = list(db.execute(statement))
+        provider_ids = {result[0].id: [] for result in page_rows} if resource == "theaters" else {}
+        if provider_ids:
+            assignments = select(models.ProviderTheater.theater_id, models.Connection.provider_code,
+                models.ProviderTheater.external_id, models.ProviderTheater.review_status).join(
+                    models.Connection, models.ProviderTheater.connection_id == models.Connection.id).where(
+                        models.ProviderTheater.theater_id.in_(provider_ids)).order_by(
+                            models.ProviderTheater.theater_id, models.Connection.provider_code,
+                            models.ProviderTheater.external_id, models.ProviderTheater.id)
+            for theater_id, code, external_id, review_status in db.execute(assignments):
+                provider_ids[theater_id].append({"provider_code": code, "external_id": external_id,
+                                                "review_status": review_status})
+        for result in page_rows:
             row = result[0]
             value = row_dict(row)
             if resource == "provider-theaters":
@@ -477,6 +500,7 @@ def create_app(settings=None, provider_service=None, engine=None):
                              raw_format=mapping.raw_format, provider_code=mapping.provider_code)
             if resource == "theaters":
                 value["generic_initial"] = generic_initial(row.name)
+                value["provider_ids"] = provider_ids[row.id]
             output.append(value)
         return {"items": output, **metadata}
 

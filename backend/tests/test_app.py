@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 import pytest
-from sqlalchemy import inspect, select
+from sqlalchemy import event, inspect, select
 
 from app.config import Settings
 from app.db import make_engine
@@ -549,3 +549,92 @@ def test_search_ranks_exact_and_prefix_before_earlier_alphabetic_substring(env):
     rows = env.client.get("/api/theaters?country=BR&q=PLF&page_size=2").json()
     assert rows["total"] == 3
     assert [row["name"] for row in rows["items"]] == ["PLF", "PLF Cinema"]
+
+
+def test_ingresso_url_key_is_returned_and_searchable_without_changing_selected_identity(env):
+    login(env)
+    with env.app.state.sessions() as db:
+        db.get(ProviderMovie, 301).url_key = "feature-url-key"
+        db.commit()
+    for endpoint in ("provider-movies", "movies", "movie-groups"):
+        response = env.client.get(f"/api/{endpoint}?country=BR&q=FEATURE-URL-KEY&exact=true")
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["total"] == 1
+        item = result["items"][0] if endpoint == "provider-movies" else result["items"][0]["provider_ids"][0]
+        assert item["url_key"] == "feature-url-key" and item["external_id"] == "ing-m"
+        assert item["id"] == 301
+    # Compatibility remains available for integrations still searching numeric/event IDs.
+    assert env.client.get("/api/provider-movies?q=ing-m&exact=true").json()["total"] == 1
+    identifier = start_check(env, provider_ids=[301])
+    assert ("check", "INGRESSO", ["ing-m"]) in env.provider.calls
+    assert env.client.get(f"/api/checks/{identifier}").status_code == 200
+
+
+def test_ingresso_catalog_omission_keeps_existing_alias_and_assignment_end_to_end(env):
+    login(env)
+    with env.app.state.sessions() as db:
+        db.get(ProviderMovie, 301).url_key = "feature-url-key"
+        db.commit()
+    refresh(env, [1])
+    row = env.client.get("/api/provider-movies?q=feature-url-key&exact=true").json()["items"][0]
+    assert row["id"] == 301 and row["group_id"] == 201 and row["manually_grouped"] is True
+    assert row["external_id"] == "ing-m" and row["url_key"] == "feature-url-key"
+
+
+def test_theaters_default_to_active_and_paginate_before_enriching_all_provider_ids(env):
+    login(env)
+    with env.app.state.sessions() as db:
+        db.get(Theater, 102).active = False
+        db.add(ProviderTheater(id=404, connection_id=1, external_id="review-alias", name="Review alias",
+                              theater_id=101, review_status="needs_review"))
+        db.add(ProviderTheater(id=405, connection_id=2, external_id="ignored-alias", name="Ignored alias",
+                              theater_id=101, review_status="ignored"))
+        db.commit()
+    result = env.client.get("/api/theaters?country=BR&page_size=1").json()
+    assert result["total"] == 1 and len(result["items"]) == 1
+    aliases = result["items"][0]["provider_ids"]
+    assert {row["external_id"] for row in aliases} == {"ing-t", "cin-t", "review-alias", "ignored-alias"}
+    assert {row["review_status"] for row in aliases} == {"confirmed", "needs_review", "ignored"}
+    assert env.client.get("/api/theaters?country=BR&page=2&page_size=1").json()["items"] == []
+    all_rows = env.client.get("/api/theaters?country=BR&include_inactive=true&page_size=1").json()
+    assert all_rows["total"] == 2
+    second = env.client.get("/api/theaters?country=BR&include_inactive=true&page=2&page_size=1").json()
+    assert second["items"][0]["id"] == 102 and second["items"][0]["active"] is False
+    # Filtering to a provider controls canonical rows, not enrichment identities.
+    filtered = env.client.get("/api/theaters?country=BR&provider=CINEMARK").json()
+    assert filtered["total"] == 1
+    assert {row["external_id"] for row in filtered["items"][0]["provider_ids"]} == {row["external_id"] for row in aliases}
+
+
+def test_theater_identity_search_is_exact_compatible_and_never_duplicates_canonical_rows(env):
+    login(env)
+    for query in ("ing-t", "cin-t", "CINEMARK"):
+        result = env.client.get(f"/api/theaters?country=BR&q={query}&exact=true").json()
+        assert result["total"] == 1 and result["items"][0]["id"] == 101
+    assert env.client.get("/api/theaters?country=BR&q=INGRESSO&exact=true").json()["total"] == 2
+    with env.app.state.sessions() as db:
+        db.add(ProviderTheater(id=404, connection_id=1, external_id="ing-t-extra", name="Extra", theater_id=101, review_status="confirmed"))
+        db.commit()
+    result = env.client.get("/api/theaters?country=BR&q=ing-t").json()
+    assert result["total"] == 1 and len(result["items"]) == 1
+    assert len(result["items"][0]["provider_ids"]) == 3
+
+
+def test_theater_provider_identity_enrichment_query_count_does_not_grow_per_row(env):
+    login(env)
+    statements = []
+    def record(_, __, statement, ___, ____, _____):
+        if statement.strip().lower().startswith("select"):
+            statements.append(statement)
+    event.listen(env.engine, "before_cursor_execute", record)
+    try:
+        assert env.client.get("/api/theaters?country=BR&page_size=1").status_code == 200
+        first = len(statements)
+        statements.clear()
+        assert env.client.get("/api/theaters?country=BR&page_size=2").status_code == 200
+        second = len(statements)
+    finally:
+        event.remove(env.engine, "before_cursor_execute", record)
+    # Authentication, canonical count, canonical page, one association query.
+    assert first == second == 4

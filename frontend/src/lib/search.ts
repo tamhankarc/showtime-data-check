@@ -55,19 +55,37 @@ export function safeExternalUrl(value: string): string | null {
     return null;
   }
 }
+export interface ProviderMovieIdentity {
+  provider_code?: unknown;
+  external_id?: unknown;
+  url_key?: unknown;
+  name?: unknown;
+}
+export function providerMovieIdentifier(movie: ProviderMovieIdentity): string {
+  if (String(movie.provider_code || "").toUpperCase() === "INGRESSO") {
+    return typeof movie.url_key === "string" && movie.url_key.trim()
+      ? movie.url_key.trim()
+      : "URL key not yet available";
+  }
+  return String(movie.external_id ?? "").trim() || "—";
+}
+export function providerMovieLabel(movie: ProviderMovieIdentity): string {
+  return `${String(movie.name || "Unnamed movie")} (${providerMovieIdentifier(movie)})`;
+}
 export function providerMovieChoice(movie: {
   id: number;
   name: string;
   external_id: string;
   provider_code: string;
+  url_key?: string | null;
   original_name?: string;
   group_name?: string;
 }): Choice {
   return {
     value: String(movie.id),
-    label: `${movie.name} (${movie.external_id})`,
+    label: providerMovieLabel(movie),
     detail: `${movie.provider_code}${movie.original_name && movie.original_name !== movie.name ? ` · ${movie.original_name}` : ""}${movie.group_name && movie.group_name !== movie.name ? ` · Group: ${movie.group_name}` : ""}`,
-    search: `${movie.external_id} ${movie.original_name || ""} ${movie.group_name || ""}`,
+    search: `${providerMovieIdentifier(movie)} ${movie.original_name || ""} ${movie.group_name || ""}`,
   };
 }
 export function recordSearchValues(value: unknown): string[] {

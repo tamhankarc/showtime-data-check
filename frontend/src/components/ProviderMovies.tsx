@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, items } from "@/lib/api";
+import { providerMovieIdentifier, providerMovieLabel } from "@/lib/search";
 import type { Bootstrap, ListPage, ProviderMovieRecord } from "@/lib/types";
 import { Combobox } from "./Combobox";
 import { Empty, ErrorNotice, Pagination, Status } from "./Shared";
@@ -52,8 +53,9 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
           <p className="eyebrow">Imported catalog</p>
           <h1>Provider movies</h1>
           <p>
-            All available provider movies and their original IDs. Refresh their
-            catalog from Home.
+            All available provider movies and identifiers. Ingresso uses its
+            urlKey; other providers use their movie ID. Refresh catalogs from
+            Home.
           </p>
         </div>
       </div>
@@ -95,7 +97,7 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
           )}
           <div className="field wide-field">
             <label htmlFor="catalog-search">
-              Movie name, original name, provider or ID
+              Movie name, original name, provider ID or Ingresso urlKey
             </label>
             <input
               id="catalog-search"
@@ -138,7 +140,7 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
                 <thead>
                   <tr>
                     <th>Movie</th>
-                    <th>Provider movie ID</th>
+                    <th>Provider ID / Ingresso urlKey</th>
                     <th>Provider</th>
                     <th>Country</th>
                     <th>Group</th>
@@ -150,15 +152,13 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
                   {movies.map((movie) => (
                     <tr key={movie.id}>
                       <td>
-                        <strong>
-                          {movie.name} ({movie.external_id})
-                        </strong>
+                        <strong>{providerMovieLabel(movie)}</strong>
                         {movie.original_name &&
                           movie.original_name !== movie.name && (
                             <small>{movie.original_name}</small>
                           )}
                       </td>
-                      <td>{movie.external_id}</td>
+                      <td>{providerMovieIdentifier(movie)}</td>
                       <td className="nowrap">{movie.provider_code}</td>
                       <td>{movie.country_code}</td>
                       <td>{movie.group_name || "—"}</td>

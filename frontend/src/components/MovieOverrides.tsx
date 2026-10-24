@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api, items, send } from "@/lib/api";
+import { providerMovieIdentifier } from "@/lib/search";
 import type { Bootstrap, ListPage, RecordData } from "@/lib/types";
 import { Combobox } from "./Combobox";
 import { EditorDialog } from "./EditorDialog";
@@ -255,7 +256,10 @@ export function MovieOverrides({
                     value: String(group.id),
                     label: `${group.name} · ${group.country_code} (#${group.id})`,
                     detail: ((group.provider_ids || []) as RecordData[])
-                      .map((id) => `${id.provider_code} (${id.external_id})`)
+                      .map(
+                        (id) =>
+                          `${id.provider_code} (${providerMovieIdentifier(id)})`,
+                      )
                       .join(", "),
                   })}
                   onChange={(v, records) =>

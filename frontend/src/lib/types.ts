@@ -24,6 +24,7 @@ export interface ProviderMovie {
   id: number;
   provider_code: string;
   external_id: string;
+  url_key?: string | null;
   name: string;
 }
 export interface ProviderMovieRecord extends ProviderMovie {

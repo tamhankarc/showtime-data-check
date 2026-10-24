@@ -5,10 +5,13 @@ import {
   genericInitial,
   safeExternalUrl,
   providerMovieChoice,
+  providerMovieIdentifier,
+  providerMovieLabel,
   recordSearchValues,
 } from "../src/lib/search.ts";
 import { allowedPath } from "../src/lib/proxy.ts";
 import nextConfig from "../next.config.ts";
+import { referenceListQuery } from "../src/lib/reference.ts";
 test("search orders exact, prefix, word, substring and secondary IDs", () => {
   const rows = [
     { value: "a", label: "IMAX PLF" },
@@ -111,4 +114,74 @@ test("production CSP disallows eval while permitting Next development debugging 
     if (original === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = original;
   }
+});
+test("Ingresso displays the supplied urlKey without changing internal request IDs", () => {
+  const movie = {
+    id: 44,
+    name: "Da Magia à Sedução",
+    provider_code: "INGRESSO",
+    external_id: "32130",
+    url_key: "da-magia-a-seducao-feitico-de-amor",
+    original_name: "Practical Magic 2",
+  };
+  const choice = providerMovieChoice(movie);
+  assert.equal(providerMovieIdentifier(movie), movie.url_key);
+  assert.equal(providerMovieLabel(movie), `${movie.name} (${movie.url_key})`);
+  assert.equal(choice.value, "44");
+  assert.equal(rankChoices([choice], "feitico-de-amor").length, 1);
+  assert.equal(rankChoices([choice], "Practical Magic").length, 1);
+  assert.equal(rankChoices([choice], "32130").length, 0);
+  assert(!choice.label.includes("32130"));
+});
+test("missing Ingresso urlKeys are explicit and never guessed or replaced by numeric IDs", () => {
+  for (const url_key of [undefined, null, "", "  "]) {
+    const movie = {
+      provider_code: "ingresso",
+      name: "A Movie",
+      external_id: "32130",
+      url_key,
+    };
+    assert.equal(providerMovieIdentifier(movie), "URL key not yet available");
+    assert(!providerMovieLabel(movie).includes("32130"));
+  }
+  assert.equal(
+    providerMovieIdentifier({ provider_code: "CINEMARK", external_id: "2140" }),
+    "2140",
+  );
+  assert.equal(
+    providerMovieIdentifier({ provider_code: "VELOX", external_id: "93920" }),
+    "93920",
+  );
+  assert.equal(
+    providerMovieIdentifier({ provider_code: "IS", external_id: "260073" }),
+    "260073",
+  );
+});
+test("theater directory requests inactive records only after explicit opt-in", () => {
+  const filters = {
+    resource: "theaters",
+    q: "CIN2140",
+    exact: false,
+    page: 1,
+    country: "BR",
+    provider: "",
+    status: "",
+    showInactiveTheaters: false,
+  };
+  assert.equal(referenceListQuery(filters).has("include_inactive"), false);
+  assert.equal(
+    referenceListQuery({ ...filters, showInactiveTheaters: true }).get(
+      "include_inactive",
+    ),
+    "true",
+  );
+  assert.equal(
+    referenceListQuery({
+      ...filters,
+      resource: "provider-theaters",
+      showInactiveTheaters: true,
+    }).has("include_inactive"),
+    false,
+  );
+  assert.equal(referenceListQuery(filters).get("q"), "CIN2140");
 });
