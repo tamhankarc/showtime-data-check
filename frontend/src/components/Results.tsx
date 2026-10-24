@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, localTimestamp, send } from "@/lib/api";
+import { apiUrl } from "@/lib/routes";
 import {
   providerMovieChoice,
   safeExternalUrl,
@@ -225,10 +226,13 @@ export function Results({
     setExporting(true);
     setError("");
     try {
-      const response = await fetch(`/api/checks/${checkId}/export?${query}`, {
-        credentials: "same-origin",
-        cache: "no-store",
-      });
+      const response = await fetch(
+        apiUrl(`checks/${checkId}/export?${query}`),
+        {
+          credentials: "same-origin",
+          cache: "no-store",
+        },
+      );
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         throw new ApiError(

@@ -1,5 +1,15 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import {
+  adminPages,
+  pagePaths,
+  regularPages,
+  sectionAllowed,
+  sectionForPath,
+  type Page,
+} from "@/lib/routes";
 import { api, ApiError, localTimestamp, send } from "@/lib/api";
 import type { Bootstrap, Job, Session } from "@/lib/types";
 import { ErrorNotice, Status } from "./Shared";
@@ -7,16 +17,6 @@ import { Results } from "./Results";
 import { Management } from "./Management";
 import { ProviderMovies } from "./ProviderMovies";
 
-type Page =
-  | "home"
-  | "showtimes"
-  | "theaters"
-  | "catalog"
-  | "countries"
-  | "movies"
-  | "directory"
-  | "assignments"
-  | "formats";
 const pageLabels: Record<Page, string> = {
   home: "Home",
   showtimes: "Showtimes",
@@ -39,10 +39,12 @@ const navIcons: Record<Page, string> = {
   assignments: "⇄",
   formats: "≋",
 };
-export function Application() {
+export function Application({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const page = sectionForPath(usePathname());
+  const knownRoute = page !== null;
   const [session, setSession] = useState<Session | null>(null);
   const [data, setData] = useState<Bootstrap | null>(null);
-  const [page, setPage] = useState<Page>("home");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [username, setUsername] = useState("");
@@ -69,8 +71,16 @@ export function Application() {
     }
   }, [refresh]);
   useEffect(() => {
-    void initialize();
-  }, [initialize]);
+    if (knownRoute) void initialize();
+  }, [initialize, knownRoute]);
+  useEffect(() => {
+    if (session && page && !sectionAllowed(session.role, page)) {
+      setError(
+        "This section requires full access. You have been returned to Home.",
+      );
+      router.replace(pagePaths.home);
+    }
+  }, [session, page, router]);
   useEffect(() => {
     const expired = () => {
       setSession(null);
@@ -102,12 +112,14 @@ export function Application() {
       setSession(null);
       setData(null);
       setPassword("");
-      setPage("home");
+      setMenuOpen(false);
+      router.replace(pagePaths.home);
     } catch (e) {
       setError((e as Error).message);
     }
   }
-  if (loading)
+  if (!page) return <>{children}</>;
+  if (loading || (session && data && !sectionAllowed(session.role, page)))
     return (
       <div className="startup">
         <span className="spinner" />
@@ -159,14 +171,6 @@ export function Application() {
         </form>
       </main>
     );
-  const regularPages: Page[] = ["home", "catalog", "showtimes", "theaters"];
-  const adminPages: Page[] = [
-    "countries",
-    "movies",
-    "directory",
-    "assignments",
-    "formats",
-  ];
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? "open" : ""}`}>
@@ -179,37 +183,37 @@ export function Application() {
         </div>
         <nav aria-label="Main navigation">
           {regularPages.map((item) => (
-            <button
-              type="button"
+            <Link
               key={item}
+              href={pagePaths[item]}
+              prefetch={false}
               className={page === item ? "active" : ""}
               aria-current={page === item ? "page" : undefined}
               onClick={() => {
-                setPage(item);
                 setMenuOpen(false);
               }}
             >
               <span aria-hidden="true">{navIcons[item]}</span>
               {pageLabels[item]}
-            </button>
+            </Link>
           ))}
           {session.role === "admin" && (
             <>
               <div className="nav-caption">Manage reference data</div>
               {adminPages.map((item) => (
-                <button
-                  type="button"
+                <Link
                   key={item}
+                  href={pagePaths[item]}
+                  prefetch={false}
                   className={page === item ? "active" : ""}
                   aria-current={page === item ? "page" : undefined}
                   onClick={() => {
-                    setPage(item);
                     setMenuOpen(false);
                   }}
                 >
                   <span aria-hidden="true">{navIcons[item]}</span>
                   {pageLabels[item]}
-                </button>
+                </Link>
               ))}
             </>
           )}

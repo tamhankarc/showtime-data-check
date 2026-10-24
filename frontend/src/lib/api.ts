@@ -1,3 +1,5 @@
+import { apiUrl } from "./routes";
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -11,7 +13,7 @@ export async function api<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const response = await fetch(`/api/${path}`, {
+  const response = await fetch(apiUrl(path), {
     ...options,
     credentials: "same-origin",
     cache: "no-store",

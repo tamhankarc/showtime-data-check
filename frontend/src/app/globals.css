@@ -139,7 +139,8 @@ input {
   display: grid;
   gap: 6px;
 }
-.sidebar nav > button {
+.sidebar nav > a {
+  text-decoration: none;
   display: flex;
   gap: 12px;
   align-items: center;
@@ -152,16 +153,16 @@ input {
   font-size: 13px;
   line-height: 1.5;
 }
-.sidebar nav > button > span {
+.sidebar nav > a > span {
   font-size: 18px;
   display: grid;
   place-items: center;
   width: 20px;
 }
-.sidebar nav > button:hover {
+.sidebar nav > a:hover {
   background: #23486e;
 }
-.sidebar nav > button.active {
+.sidebar nav > a.active {
   background: #2d527b;
   box-shadow: inset 3px 0 #a4c7ed;
 }
@@ -955,7 +956,7 @@ progress {
   .brand strong {
     font-size: 13px;
   }
-  .sidebar nav > button {
+  .sidebar nav > a {
     font-size: 12px;
     padding-inline: 9px;
   }
@@ -999,11 +1000,11 @@ progress {
   .brand small {
     font-size: 9px;
   }
-  .sidebar nav > button {
+  .sidebar nav > a {
     font-size: 11px;
     gap: 7px;
   }
-  .sidebar nav > button > span {
+  .sidebar nav > a > span {
     font-size: 15px;
     width: 17px;
   }
@@ -1095,7 +1096,7 @@ progress {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 5px;
   }
-  .sidebar nav > button {
+  .sidebar nav > a {
     font-size: 12px;
     padding: 9px;
   }

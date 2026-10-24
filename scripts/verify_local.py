@@ -37,7 +37,7 @@ def wait(client, identifier):
 
 
 def main(refresh=False, live_check=False, refresh_velox=False, br_check=False, br_movie="Practical Magic 2"):
-    with httpx.Client(base_url="http://localhost:3001", headers={"Origin": "http://localhost:3001"}, timeout=55) as client:
+    with httpx.Client(base_url="http://localhost:3001", headers={"Origin": "http://localhost:3001"}, timeout=55, follow_redirects=True) as client:
         response = client.post("/api/login", json=credentials("admin"))
         response.raise_for_status()
         bootstrap = client.get("/api/bootstrap").json()
