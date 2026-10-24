@@ -6,8 +6,7 @@ import json
 import re
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+from xlsxwriter import Workbook
 from sqlalchemy import select
 from .models import FormatMapping, MovieFormatOverride, MovieGroup, ProviderMovie, ProviderTheater, Theater
 
@@ -161,36 +160,36 @@ def metrics(rows):
 
 
 def xlsx_export(rows, metadata, view):
-    book = Workbook()
-    sheet = book.active
-    sheet.title = "Theaters" if view == "theaters" else "Showtimes"
     fields = (["movie_name", "theater_id", "theater_name", "chain", "address", "city", "country_code", "showtimes", "first", "last", "formats", "providers"]
               if view == "theaters" else ["movie_name", "theater_id", "theater_name", "chain", "address", "city", "country_code", "date", "time", "timezone", "published_format", "raw_format", "audio_language", "subtitle_language", "providers", "links", "has_usable_link"])
     def safe(value):
         if isinstance(value, (list, dict)):
             value = json.dumps(value, ensure_ascii=False)
         if isinstance(value, str):
+            value = value.replace("\r\n", "\n").replace("\r", "\n")
             value = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F]", "", value)
-            if value[:1] in "=+-@":
+            if value.startswith(("=", "+", "-", "@")):
                 return "'" + value
         return value
-    sheet.append([field.replace("_", " ").title() for field in fields])
-    for row in rows:
-        sheet.append([safe(row.get(field)) for field in fields])
-    sheet.freeze_panes, sheet.auto_filter.ref = "A2", sheet.dimensions
-    for cell in sheet[1]:
-        cell.fill, cell.font = PatternFill("solid", fgColor="173B63"), Font(color="FFFFFF", bold=True)
-    for column in sheet.columns:
-        letter = column[0].column_letter
-        sheet.column_dimensions[letter].width = min(55, max(14, len(str(column[0].value)) + 4))
-    meta = book.create_sheet("Check details")
-    meta.append(["Field", "Value"])
-    for key, value in metadata.items():
-        meta.append([key, safe(value)])
-    meta.column_dimensions["A"].width, meta.column_dimensions["B"].width = 26, 100
-    for row in meta:
-        for cell in row:
-            cell.alignment = Alignment(wrap_text=True, vertical="top")
     result = BytesIO()
-    book.save(result)
+    # BytesIO alone is insufficient: workbook assembly must also avoid disk-backed XML files.
+    with Workbook(result, {"in_memory": True, "strings_to_formulas": False, "strings_to_urls": False}) as book:
+        sheet = book.add_worksheet("Theaters" if view == "theaters" else "Showtimes")
+        header = book.add_format({"bg_color": "#173B63", "font_color": "#FFFFFF", "bold": True})
+        wrapped = book.add_format({"text_wrap": True, "valign": "top"})
+        headings = [field.replace("_", " ").title() for field in fields]
+        sheet.write_row(0, 0, headings, header)
+        last_row = 0
+        for last_row, row in enumerate(rows, start=1):
+            sheet.write_row(last_row, 0, [safe(row.get(field)) for field in fields])
+        sheet.freeze_panes(1, 0)
+        sheet.autofilter(0, 0, last_row, len(fields) - 1)
+        for column, heading in enumerate(headings):
+            sheet.set_column(column, column, min(55, max(14, len(heading) + 4)))
+        meta = book.add_worksheet("Check details")
+        meta.set_column(0, 0, 26, wrapped)
+        meta.set_column(1, 1, 100, wrapped)
+        meta.write_row(0, 0, ["Field", "Value"], wrapped)
+        for index, (key, value) in enumerate(metadata.items(), start=1):
+            meta.write_row(index, 0, [safe(key), safe(value)], wrapped)
     return result.getvalue()

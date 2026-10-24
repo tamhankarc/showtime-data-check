@@ -33,7 +33,7 @@ Stop the frontend/backend with Ctrl+C in their windows. `docker compose stop pos
 - Published-format mappings and movie-specific overrides are copied. Unmapped values display the provider raw format. Language, dubbed/subtitled and VIP distinctions are preserved.
 - No usable link means neither booking nor movie-page/theater fallback exists.
 - Provider results exist in RAM only, for at most 15 minutes from each source's fetch completion. Filtering/view switching does not extend them. Expiry/reference changes require explicit Reload and disable exports.
-- XLSX files are generated on demand, not retained on the server. Exported local files are controlled by the user.
+- XLSX files are generated entirely in memory on demand, including workbook assembly; no temporary export files are written or retained on the server. Exported local files are controlled by the user.
 - There is no automatic import schedule, JSON publication, BO support, or ongoing Admin synchronization.
 
 ## Deployment and verification

@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -202,8 +203,10 @@ class ProviderService:
             raise ProviderCancelled("The provider request was cancelled.")
 
     def _fetch_json(self, url: str, cancel: Event, headers: dict | None = None,
-                    *, body: bytes | None = None, gzip_response: bool = False) -> Any:
+                    *, body: bytes | None = None, gzip_response: bool = False,
+                    timeout_budget: float | None = None) -> Any:
         """Bounded HTTP transport. Test fixtures replace this method, never providers."""
+        budget = self.timeout if timeout_budget is None else min(240.0, max(5.0, float(timeout_budget)))
         opener = urllib.request.build_opener(_NoRedirects())
         for attempt in range(3):
             self._check(cancel)
@@ -214,9 +217,9 @@ class ProviderService:
                 request_headers.update(self._relay_headers(body or b""))
             request = urllib.request.Request(url, data=body, headers={
                 "Accept": "application/json", "User-Agent": "showtime-data-check/1", **request_headers})
-            deadline, delay = time.monotonic() + self.timeout, 2 ** attempt
+            deadline, delay = time.monotonic() + budget, 2 ** attempt
             try:
-                with opener.open(request, timeout=self.timeout) as response:
+                with opener.open(request, timeout=budget) as response:
                     if response.headers.get("Content-Length"):
                         try:
                             if int(response.headers["Content-Length"]) > MAX_RESPONSE_BYTES:
@@ -232,7 +235,7 @@ class ProviderService:
                     while True:
                         self._check(cancel)
                         if time.monotonic() > deadline:
-                            raise ProviderError("The provider download exceeded its time limit.")
+                            raise ProviderError("The provider request timed out. Please retry.")
                         chunk = stream.read(min(64 * 1024, MAX_RESPONSE_BYTES + 1 - total))
                         if not chunk:
                             break
@@ -254,10 +257,20 @@ class ProviderService:
                         delay = min(30, max(delay, float(retry_after)))
                     except (TypeError, ValueError):
                         pass
-            except (TimeoutError, socket.timeout, urllib.error.URLError, OSError):
+            except (gzip.BadGzipFile, EOFError, zlib.error):
+                raise ProviderError("The provider returned an invalid or incomplete compressed response." if gzip_response
+                                    else "The provider returned an incomplete response.") from None
+            except (TimeoutError, socket.timeout):
+                if attempt == 2:
+                    raise ProviderError("The provider request timed out. Please retry.") from None
+            except urllib.error.URLError as error:
+                if attempt == 2:
+                    message = "The provider request timed out. Please retry." if isinstance(error.reason, (TimeoutError, socket.timeout)) else "The provider could not be reached. Please retry."
+                    raise ProviderError(message) from None
+            except OSError:
                 if attempt == 2:
                     raise ProviderError("The provider could not be reached. Please retry.") from None
-            except (ValueError, UnicodeError, EOFError):
+            except (ValueError, UnicodeError):
                 raise ProviderError("The provider returned invalid JSON or an incomplete response.") from None
             if cancel.wait(delay):
                 self._check(cancel)
@@ -558,7 +571,7 @@ class ProviderService:
                 raise ProviderError("The Cinemark relay configuration is invalid.")
             body = b'{"version":1}'
             payload = self._fetch_json(relay_url, cancel, {"Content-Type": "application/json", "Accept-Encoding": "gzip",
-                **self._relay_headers(body)}, body=body, gzip_response=True)
+                **self._relay_headers(body)}, body=body, gzip_response=True, timeout_budget=max(self.timeout, 200))
         if not isinstance(payload, list):
             raise ProviderError("Cinemark returned an invalid theater feed.")
         return payload

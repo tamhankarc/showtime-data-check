@@ -218,6 +218,7 @@ def test_cinemark_relay_signature_fixed_route_body_and_no_secret_headers():
     def route(url, headers, kwargs):
         assert url == "https://fixture123.lambda-url.us-east-1.on.aws/cinemark"
         assert kwargs["body"] == b'{"version":1}' and kwargs["gzip_response"] is True
+        assert kwargs["timeout_budget"] == 200
         canonical = "\n".join(("v1", "POST", "/cinemark", headers["X-Relay-Timestamp"],
             headers["X-Relay-Nonce"], hashlib.sha256(kwargs["body"]).hexdigest()))
         assert headers["X-Relay-Signature"] == hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
@@ -453,3 +454,71 @@ def test_ingresso_vip_detection_does_not_mutate_source_type_list():
     service = FixtureService(route, ingresso_partnerships=["warner"])
     assert service.showtimes({**CONNECTION, "provider_code": "INGRESSO"}, {"m"}, threading.Event()).showtimes
     assert source == original
+
+
+@pytest.mark.parametrize("budget,expected", [(None, 20), (2, 5), (500, 240), (180, 180)])
+def test_transport_override_timeout_budget_is_bounded_without_changing_default(monkeypatch, budget, expected):
+    received = []
+    def response(_, timeout):
+        received.append(timeout)
+        return Response(b"[]")
+    service = transport(monkeypatch, response)
+    assert service._fetch_json("https://fixture.invalid/", threading.Event(), timeout_budget=budget) == []
+    assert received == [expected] and service.timeout == 20
+
+
+def test_is_transport_keeps_default_timeout_instead_of_relay_budget(monkeypatch):
+    received = []
+    def response(_, timeout):
+        received.append(timeout)
+        return Response(b'{"movies":[]}')
+    service = transport(monkeypatch, response)
+    result = service.catalog({"provider_code": "IS", "country_code": "AU"}, threading.Event())
+    assert result.movies == [] and received == [20]
+
+
+def test_signed_relay_uses_at_least_200_seconds_but_respects_larger_configured_budget():
+    for configured, expected in ((20, 200), (120, 200), (240, 240)):
+        def route(_, __, kwargs):
+            assert kwargs["timeout_budget"] == expected
+            return CINEMARK
+        service = FixtureService(route, request_timeout=configured,
+            cinemark_relay_url="https://fixture123.lambda-url.us-east-1.on.aws/cinemark", cinemark_relay_secret="x" * 48)
+        assert service.catalog({**CONNECTION, "provider_code": "CINEMARK"}, threading.Event()).movies
+
+
+@pytest.mark.parametrize("body", [b"not-gzip private-provider-body", gzip.compress(b"[]")[:-4]])
+def test_corrupt_or_truncated_gzip_is_not_misreported_as_network_failure(monkeypatch, body):
+    calls = []
+    def response(*_):
+        calls.append(1)
+        return Response(body, {"Content-Encoding": "gzip"})
+    service = transport(monkeypatch, response)
+    with pytest.raises(ProviderError) as captured:
+        service._fetch_json("https://fixture.invalid/", ImmediateEvent(), gzip_response=True)
+    assert str(captured.value) == "The provider returned an invalid or incomplete compressed response."
+    assert len(calls) == 1 and "private-provider-body" not in str(captured.value)
+
+
+@pytest.mark.parametrize("failure", [
+    TimeoutError("private-timeout-details"),
+    urllib.error.URLError(TimeoutError("private-timeout-details")),
+])
+def test_actual_timeout_retries_then_reports_safe_timeout_category(monkeypatch, failure):
+    attempts = []
+    def response(*_):
+        attempts.append(1)
+        raise failure
+    service = transport(monkeypatch, response)
+    with pytest.raises(ProviderError) as captured:
+        service._fetch_json("https://fixture.invalid/?secret=private", ImmediateEvent())
+    assert str(captured.value) == "The provider request timed out. Please retry."
+    assert len(attempts) == 3 and "private" not in str(captured.value)
+
+
+def test_non_timeout_url_error_remains_sanitized_network_failure(monkeypatch):
+    def response(*_):
+        raise urllib.error.URLError(OSError("private-dns-or-tls-details"))
+    with pytest.raises(ProviderError) as captured:
+        transport(monkeypatch, response)._fetch_json("https://fixture.invalid/?secret=private", ImmediateEvent())
+    assert str(captured.value) == "The provider could not be reached. Please retry."

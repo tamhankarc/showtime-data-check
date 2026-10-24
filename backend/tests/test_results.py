@@ -1,6 +1,8 @@
 """Regression checks for safe exports, source VIP distinctions, and worker payload release."""
 import gc
 from io import BytesIO
+import json
+import tempfile
 import threading
 import time
 import weakref
@@ -88,7 +90,6 @@ def test_export_strips_xml_controls_before_formula_protection_and_preserves_vali
     assert sheet["A2"].value == '\'=HYPERLINK("https://example.invalid")'
     assert sheet["A2"].data_type != "f"
     assert sheet["C2"].value == "Cinéma 東京"
-    # XML parsers normalize carriage returns while preserving the useful layout.
     assert sheet["E2"].value == "\tStreet\nSecond line\nEnd"
     assert book["Check details"]["B2"].value == "'+SUM(1,1)"
     assert book["Check details"]["B2"].data_type != "f"
@@ -100,6 +101,42 @@ def test_export_provider_values_never_become_workbook_formulas(prefix):
     cell = load_workbook(BytesIO(content), data_only=False)["Showtimes"]["A2"]
     assert cell.value == "'" + prefix + "provider text"
     assert cell.data_type != "f"
+
+
+@pytest.mark.parametrize("view", ["showtimes", "theaters"])
+def test_export_empty_strings_remain_blank_instead_of_becoming_apostrophes(view):
+    content = xlsx_export([{"movie_name": "", "theater_name": ""}], {"empty": ""}, view)
+    book = load_workbook(BytesIO(content), data_only=False)
+    sheet = book["Theaters" if view == "theaters" else "Showtimes"]
+    assert sheet["A2"].value is None and sheet["C2"].value is None
+    assert book["Check details"]["B2"].value is None
+
+
+@pytest.mark.parametrize("view", ["showtimes", "theaters"])
+def test_xlsx_exports_never_create_temporary_files_and_keep_workbook_contract(monkeypatch, view):
+    def reject_temporary_file(*args, **kwargs):
+        raise AssertionError("Export bodies must never be written to a temporary file")
+
+    monkeypatch.setattr(tempfile, "mkstemp", reject_temporary_file)
+    row = {"movie_name": "In-memory feature", "theater_name": "https://cinema.example/movie",
+           "country_code": "BR", "providers": ["CINEMARK"], "showtimes": 2}
+    metadata = {"status": "partial", "selection": {"country_code": "BR", "provider_codes": ["CINEMARK"]},
+                "provider_outcomes": [{"provider_code": "CINEMARK", "fetched_at": "2026-10-24T12:00:00+00:00"}]}
+    content = xlsx_export([row], metadata, view)
+    book = load_workbook(BytesIO(content), data_only=False)
+    name = "Theaters" if view == "theaters" else "Showtimes"
+    assert book.sheetnames == [name, "Check details"]
+    sheet = book[name]
+    assert sheet["A2"].value == "In-memory feature"
+    assert sheet["C2"].value == "https://cinema.example/movie" and sheet["C2"].hyperlink is None
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref == ("A1:L2" if view == "theaters" else "A1:Q2")
+    assert sheet["A1"].font.bold and sheet["A1"].fill.fgColor.rgb.endswith("173B63")
+    details = dict(book["Check details"].iter_rows(min_row=2, values_only=True))
+    assert details["status"] == "partial"
+    assert json.loads(details["selection"]) == metadata["selection"]
+    assert json.loads(details["provider_outcomes"]) == metadata["provider_outcomes"]
+    assert book["Check details"]["B2"].alignment.wrap_text
 
 
 def test_provider_vip_flag_keeps_same_time_canonical_screenings_separate(reference_database):
