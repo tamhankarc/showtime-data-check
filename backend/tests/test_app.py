@@ -681,13 +681,55 @@ def test_malformed_is_catalog_preserves_existing_active_ids_and_manual_groups(en
                              group_id=204, active=True, manually_grouped=True))
         db.commit()
     service = ProviderService(SimpleNamespace(is_api_key="fixture-key", request_timeout=20))
-    service._fetch_json = lambda *_args, **_kwargs: {"movies": [{"id": "existing-id"}], "meta_info": {"total_count": 1}}
+    service._fetch_json = lambda *_args, **_kwargs: {"movies": [{"title": "Missing native ID"}], "meta_info": {"total_count": 1}}
     env.provider.catalog = service.catalog
     refresh(env, [3], "failed")
     with env.app.state.sessions() as db:
         movie = db.get(ProviderMovie, 304)
         assert movie.active is True and movie.group_id == 204 and movie.manually_grouped is True
         assert db.get(MovieGroup, 204).active is True
+
+
+def test_is_untitled_catalog_keeps_known_metadata_and_discovers_new_native_ids(env):
+    from datetime import date
+    from app.providers import ProviderService
+    login(env)
+    with env.app.state.sessions() as db:
+        db.add(Connection(id=3, country_code="AU", provider_code="IS", provider_country_code="AU", timezone="Australia/Sydney"))
+        db.add(MovieGroup(id=204, country_code="AU", name="Manual display group"))
+        db.flush()
+        db.add(ProviderMovie(id=304, connection_id=3, external_id="existing-id", name="Known display title",
+                             original_name="Known original title", release_date=date(1991, 1, 2),
+                             group_id=204, active=False, manually_grouped=True))
+        db.commit()
+    service = ProviderService(SimpleNamespace(is_api_key="fixture-key", request_timeout=20))
+    service._fetch_json = lambda *_args, **_kwargs: {
+        "movies": [{"id": "existing-id", "title": "", "original_title": None, "release_dates": {"AU": "2099-01-01"}},
+                   {"id": "new-id", "title": None}], "meta_info": {"total_count": 2}}
+    env.provider.catalog = service.catalog
+    refresh(env, [3], "done")
+    with env.app.state.sessions() as db:
+        known = db.get(ProviderMovie, 304)
+        assert known.name == "Known display title" and known.original_name == "Known original title"
+        assert known.release_date == date(1991, 1, 2) and known.active is True
+        assert known.group_id == 204 and known.manually_grouped is True
+        assert db.get(MovieGroup, 204).name == "Manual display group"
+        new = db.scalar(select(ProviderMovie).where(ProviderMovie.connection_id == 3, ProviderMovie.external_id == "new-id"))
+        assert new.name == "IS movie new-id" and new.active is True
+        new_id, new_group = new.id, new.group_id
+        assert db.get(Connection, 3).movie_count == 2
+    visible = env.client.get("/api/provider-movies?country=AU&q=IS%20movie%20new-id&exact=true").json()
+    assert visible["total"] == 1 and visible["items"][0]["id"] == new_id
+    service._fetch_json = lambda *_args, **_kwargs: {
+        "movies": [{"id": "existing-id", "title": "", "original_title": None},
+                   {"id": "new-id", "title": "Newly supplied title", "original_title": "New original"}],
+        "meta_info": {"total_count": 2}}
+    refresh(env, [3], "done")
+    with env.app.state.sessions() as db:
+        new = db.get(ProviderMovie, new_id)
+        assert new.name == "Newly supplied title" and new.original_name == "New original"
+        assert new.group_id == new_group
+        assert db.get(ProviderMovie, 304).name == "Known display title"
 
 
 def test_incomplete_ingresso_pagination_preserves_existing_catalog(env):

@@ -707,12 +707,27 @@ def test_provider_release_dates_accept_real_and_legacy_shapes(value, expected):
     assert providers._date(value) == expected
 
 
-@pytest.mark.parametrize("movies", [[{"id": "m"}], [None], [{"title": "Film"}], [{"id": True, "title": "Film"}],
+@pytest.mark.parametrize("movies", [[None], [{"title": "Film"}], [{"id": True, "title": "Film"}],
                                   [{"id": "m", "title": "Film"}, {"id": "m", "title": "Film"}]])
 def test_is_malformed_or_duplicate_catalog_entries_cannot_be_a_complete_refresh(movies):
     service = FixtureService(lambda *_: {"movies": movies})
     with pytest.raises(ProviderError):
         service.catalog({"provider_code": "IS", "country_code": "AU"}, threading.Event())
+
+
+def test_is_catalog_preserves_untitled_ids_and_uses_original_title_when_available():
+    def route(url, *_):
+        fields = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["fields"][0].split(",")
+        assert "original_title" in fields
+        return {"movies": [{"id": "missing", "title": " ", "original_title": None},
+                           {"id": "original", "title": "", "original_title": "Original title"},
+                           {"id": "absent"}, {"id": 123, "title": None}],
+                "meta_info": {"total_count": 4}}
+    result = FixtureService(route).catalog({"provider_code": "IS", "country_code": "AU"}, threading.Event())
+    assert [movie["id"] for movie in result.movies] == ["missing", "original", "absent", "123"]
+    assert [movie["name"] for movie in result.movies] == ["IS movie missing", "Original title", "IS movie absent", "IS movie 123"]
+    assert [movie["name_missing"] for movie in result.movies] == [True, False, True, True]
+    assert result.warnings == []
 
 
 @pytest.mark.parametrize("body", [b"", b" \r\n\t"])

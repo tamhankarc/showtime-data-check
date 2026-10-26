@@ -76,6 +76,7 @@ def upsert_movies(db, connection, movies, complete=True):
     new_movies = []
     for external_id, item in incoming.items():
         row = records.get(external_id)
+        new_record = row is None
         if row is None:
             kind, target = targets[external_id]
             group_id = target if kind == "existing" else new_groups[target].id
@@ -83,12 +84,15 @@ def upsert_movies(db, connection, movies, complete=True):
                                 name=item["name"][:500], group_id=group_id)
             new_movies.append(row)
             records[external_id] = row
-        row.name, row.active = item["name"][:500], True
-        row.original_name = str(item.get("original_name") or "")[:500] or None
+        row.active = True
+        missing_is_name = connection.provider_code == "IS" and item.get("name_missing") is True
+        if new_record or not missing_is_name:
+            row.name = item["name"][:500]
+            row.original_name = str(item.get("original_name") or "")[:500] or None
         if connection.provider_code == "INGRESSO" and "url_key" in item:
             row.url_key = str(item.get("url_key") or "").strip()[:500] or None
         parsed_release = parse_day(item.get("release"))
-        if parsed_release is not None:
+        if parsed_release is not None and (new_record or not missing_is_name):
             row.release_date = parsed_release
         row.parent_external_id = str(item.get("parent_id") or "")[:160] or None
     db.add_all(new_movies)

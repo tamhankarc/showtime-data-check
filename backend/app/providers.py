@@ -388,9 +388,9 @@ class ProviderService:
                 for item in values:
                     if not isinstance(item, dict):
                         raise ProviderError("The IS API returned an invalid catalog entry.")
-                    identifier, name = item.get("id"), item.get("title") or item.get("name")
+                    identifier = item.get("id")
                     if (isinstance(identifier, bool) or not isinstance(identifier, (str, int))
-                            or not _text(identifier) or not isinstance(name, str) or not name.strip()):
+                            or not _text(identifier)):
                         raise ProviderError("The IS API returned an incomplete catalog entry.")
                     identifier = _text(identifier)
                     if identifier in catalog_ids:
@@ -435,7 +435,7 @@ class ProviderService:
             for external_id, zone in (connection.get("theater_timezones") or {}).items():
                 zones.add(str(self._timezone(connection, external_id, zone)))
             midnights = [datetime.combine(datetime.now(ZoneInfo(zone)).date(), datetime.min.time(), ZoneInfo(zone)) for zone in zones]
-            parameters = {"countries": country, "fields": "id,title,release_dates",
+            parameters = {"countries": country, "fields": "id,title,original_title,release_dates",
                           "include_outdated": "false", "include_upcomings": "false",
                           "time_from": min(midnights).astimezone(timezone.utc).isoformat()}
             window = connection.get("catalog_window_days")
@@ -446,8 +446,12 @@ class ProviderService:
             for item in self._is_items("/movies", parameters, cancel):
                 releases = item.get("release_dates") or {}
                 release = item.get("release_date") or (releases.get(country) if isinstance(releases, dict) else None)
-                movie = _movie(item.get("id"), item.get("title") or item.get("name"), release,
-                               item.get("original_title"))
+                name = next((value.strip() for key in ("title", "name", "original_title")
+                             if isinstance(value := item.get(key), str) and value.strip()), None)
+                # An untitled upstream movie is still an observed native ID. Keep
+                # it in the complete catalog so missing metadata cannot archive it.
+                movie = _movie(item.get("id"), name or f"IS movie {_text(item.get('id'))}", release,
+                               item.get("original_title"), name_missing=name is None)
                 if movie:
                     result.movies.append(movie)
             return result
