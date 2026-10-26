@@ -254,7 +254,7 @@ export function MovieOverrides({
                   }
                   mapRecord={(group) => ({
                     value: String(group.id),
-                    label: `${group.name} · ${group.country_code} (#${group.id})`,
+                    label: `${group.name} · ${group.country_code} (#${group.id})${group.active === false ? " · Archived" : ""}`,
                     detail: ((group.provider_ids || []) as RecordData[])
                       .map(
                         (id) =>

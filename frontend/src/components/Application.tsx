@@ -389,7 +389,7 @@ function Home({
           <strong>{data.connections.filter((c) => c.enabled).length}</strong>
         </div>
         <div>
-          <span>Provider movie IDs</span>
+          <span>Current catalog movie IDs</span>
           <strong>
             {data.connections
               .reduce((sum, c) => sum + (c.movie_count || 0), 0)
@@ -468,6 +468,11 @@ function Home({
             Open Showtimes or Theaters by movie, choose a country and movie, and
             click Load data. Merely opening a page does not call a provider.
             Temporary results expire no later than 15 minutes after fetching.
+          </p>
+          <p>
+            Catalog windows limit discovery only. Archived movie IDs and manual
+            groupings remain stored; use Include archived movies to find and
+            check them.
           </p>
         </div>
       </div>

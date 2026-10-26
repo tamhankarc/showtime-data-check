@@ -19,6 +19,7 @@ export interface Connection {
   last_success_at?: string;
   last_status?: string;
   movie_count?: number;
+  catalog_window_days?: number | null;
 }
 export interface ProviderMovie {
   id: number;

@@ -11,7 +11,7 @@ from app.config import Settings
 from app.db import make_engine
 from app.main import create_app
 from app.migrations import SCHEMA_LOCK, initialize_schema
-from app.models import Base, ProviderMovie
+from app.models import Base, Connection, ProviderMovie
 
 
 def legacy_engine(tmp_path):
@@ -19,8 +19,12 @@ def legacy_engine(tmp_path):
     legacy = str(CreateTable(ProviderMovie.__table__).compile(engine))
     legacy = re.sub(r"\n\s*url_key VARCHAR\(500\),", "", legacy)
     assert "url_key" not in legacy
+    legacy_connection = str(CreateTable(Connection.__table__).compile(engine))
+    legacy_connection = re.sub(r"\n\s*catalog_window_days INTEGER,", "", legacy_connection)
+    assert "catalog_window_days" not in legacy_connection
     with engine.begin() as connection:
         connection.exec_driver_sql(legacy)
+        connection.exec_driver_sql(legacy_connection)
         Base.metadata.create_all(connection)
         connection.execute(text("INSERT INTO countries (code,name,timezone,enabled) VALUES ('BR','Brazil','America/Sao_Paulo',true)"))
         connection.execute(text("INSERT INTO connections (id,country_code,provider_code,provider_country_code,timezone,enabled,last_status,movie_count) VALUES (1,'BR','INGRESSO','BR','America/Sao_Paulo',true,'seeded',1)"))
@@ -32,13 +36,16 @@ def legacy_engine(tmp_path):
 def test_legacy_upgrade_is_additive_idempotent_and_preserves_identifiers(tmp_path):
     engine = legacy_engine(tmp_path)
     assert "url_key" not in {column["name"] for column in inspect(engine).get_columns("provider_movies")}
+    assert "catalog_window_days" not in {column["name"] for column in inspect(engine).get_columns("connections")}
     initialize_schema(engine)
     initialize_schema(engine)
     columns = inspect(engine).get_columns("provider_movies")
     assert sum(column["name"] == "url_key" for column in columns) == 1
     assert next(column for column in columns if column["name"] == "url_key")["nullable"] is True
+    assert sum(column["name"] == "catalog_window_days" for column in inspect(engine).get_columns("connections")) == 1
     with engine.begin() as connection:
         assert connection.execute(text("SELECT id,external_id,group_id,manually_grouped,url_key FROM provider_movies")).one() == (42, "12345", 7, True, None)
+        assert connection.execute(text("SELECT catalog_window_days FROM connections WHERE id=1")).scalar() is None
         connection.execute(text("UPDATE provider_movies SET url_key='existing-movie' WHERE id=42"))
     initialize_schema(engine)
     with engine.connect() as connection:

@@ -147,7 +147,11 @@ def test_is_missing_credential_is_public_safe():
 
 
 def ingresso_route(url, *_):
-    if "/events/" in url:
+    if "/events/coming-soon/" in url:
+        return []
+    if "/templates/nowplaying/" in url:
+        if int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("skip", ["0"])[0]) > 0:
+            return []
         return [{"id": "m", "title": "Movie", "originalTitle": "Original", "premiereDate": {"year": 2099, "month": 1, "day": 1}}]
     if "/theaters/" in url:
         return [{"id": "t", "name": "Cinema", "corporationId": "chain", "corporation": "Chain",
@@ -166,10 +170,9 @@ def test_ingresso_catalog_has_partnership_metadata_and_no_sessions():
     result = service.catalog({**CONNECTION, "provider_code": "INGRESSO"}, threading.Event())
     assert len(result.movies) == 1
     assert result.movies[0]["partnerships"] == ["sony", "warner"]
-    assert result.theaters[0]["address"] == "Avenue, 2"
-    assert result.theaters[0]["lat"] == 0
-    assert result.showtimes == []
+    assert result.theaters == [] and result.showtimes == []
     assert not any("/sessions/" in call[0] for call in service.calls)
+    assert not any("/theaters/" in call[0] or "/events/partnership/" in call[0] for call in service.calls)
 
 
 def test_ingresso_preserves_vip_and_deduplicates_partnership_copies():
@@ -532,7 +535,7 @@ def test_ingresso_captures_url_key_without_replacing_event_id_or_numeric_session
             return []
         assert "/sessions/event/12345/partnership/" in url
         assert "film-string-identifier" not in url
-        return []
+        return [{"event": {"id": 12345, "title": "Film", "urlKey": "film-string-identifier"}, "theaters": []}]
     service = FixtureService(route, ingresso_partnerships=["warner"])
     result = service.showtimes({**CONNECTION, "provider_code": "INGRESSO"}, {"12345"}, threading.Event())
     assert result.movies[0]["id"] == "12345"
@@ -548,3 +551,186 @@ def test_ingresso_omitted_url_key_remains_omitted_but_explicit_empty_is_preserve
     assert ("url_key" in result.movies[0]) is has_alias
     if has_alias:
         assert result.movies[0]["url_key"] == expected
+
+
+def test_ingresso_current_short_pages_count_is_page_local_and_presale_union_is_complete():
+    rows = [
+        {"id": "revival", "title": "Old revival", "premiereDate": {"localDate": "1920-01-02T00:00:00"},
+         "isPlaying": True, "isReexhibition": True, "urlKey": "revival"},
+        {"id": "now", "title": "Now", "isPlaying": True},
+        {"id": "last", "title": "Last", "isPlaying": True},
+    ]
+    def route(url, *_):
+        if "/templates/nowplaying/" in url:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+            assert query["limit"] == ["500"]
+            skip = int(query["skip"][0])
+            page = rows[skip:skip + 2]
+            return {"items": page, "count": len(page)}
+        if "/events/coming-soon/" in url:
+            return {"items": [{"id": "soon", "title": "Pre-sale", "premiereDate": {"localDate": "2099-01-01"},
+                               "inPreSale": True, "isComingSoon": True},
+                              rows[1]], "count": 2}
+        pytest.fail("Catalog refresh must not fetch sessions, the archive or theaters.")
+    service = FixtureService(route)
+    result = service.catalog({**CONNECTION, "provider_code": "INGRESSO"}, threading.Event())
+    movies = {row["id"]: row for row in result.movies}
+    assert set(movies) == {"revival", "now", "last", "soon"}
+    assert movies["revival"]["release"] == "1920-01-02" and movies["revival"]["is_reexhibition"] is True
+    assert movies["soon"]["in_pre_sale"] is True and movies["soon"]["release"] == "2099-01-01"
+    assert movies["now"]["partnerships"] == ["sony", "warner"]
+    assert result.warnings == [] and result.theaters == [] and result.showtimes == []
+    assert len(service.calls) == 8  # Three current pages + upcoming list, per partner.
+
+
+def test_ingresso_global_count_pagination_does_not_issue_per_movie_requests():
+    rows = [{"id": str(index), "title": f"Film {index}"} for index in range(1001)]
+    def route(url, *_):
+        if "/templates/nowplaying/" in url:
+            skip = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["skip"][0])
+            return {"items": rows[skip:skip + 500], "count": len(rows)}
+        if "/events/coming-soon/" in url:
+            return {"items": None, "count": 0}
+        pytest.fail("No per-movie requests are allowed in catalog discovery.")
+    service = FixtureService(route, ingresso_partnerships=["warner"])
+    result = service.catalog({**CONNECTION, "provider_code": "INGRESSO"}, threading.Event())
+    assert len(result.movies) == 1001 and len(service.calls) == 5
+    assert [urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["skip"][0] for url, _, _ in service.calls if "/nowplaying/" in url] == ["0", "500", "1000", "1001"]
+
+
+@pytest.mark.parametrize("scenario", ["repeat", "wrong_count", "incomplete", "bad_item", "oversized"])
+def test_ingresso_unsafe_catalog_pages_fail_without_archive_fallback(scenario):
+    movie = {"id": "m", "title": "Film"}
+    def route(url, *_):
+        assert "/templates/nowplaying/" in url
+        skip = int(urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["skip"][0])
+        if scenario == "repeat":
+            return {"items": [movie], "count": 1}
+        if scenario == "wrong_count":
+            return {"items": [movie], "count": 0}
+        if scenario == "incomplete":
+            return {"items": [movie] if skip == 0 else [], "count": 5}
+        if scenario == "bad_item":
+            return {"items": [{"id": "m"}], "count": 1}
+        return {"items": [{"id": str(i), "title": "Film"} for i in range(501)], "count": 501}
+    service = FixtureService(route, ingresso_partnerships=["warner"])
+    with pytest.raises(ProviderError):
+        service.catalog({**CONNECTION, "provider_code": "INGRESSO"}, threading.Event())
+    assert not any("/events/partnership/" in call[0] or "/sessions/" in call[0] for call in service.calls)
+
+
+@pytest.mark.parametrize("scenario", ["capped", "wrong_total", "upstream_failure"])
+def test_ingresso_incomplete_upcoming_list_is_not_silently_marked_complete(scenario):
+    def route(url, *_):
+        if "/nowplaying/" in url:
+            return {"items": [], "count": 0}
+        if scenario == "upstream_failure":
+            raise ProviderError("The provider request failed (HTTP 503).")
+        rows = [{"id": str(i), "title": "Future"} for i in range(500 if scenario == "capped" else 1)]
+        return {"items": rows, "count": len(rows) if scenario == "capped" else 10}
+    with pytest.raises(ProviderError):
+        FixtureService(route, ingresso_partnerships=["warner"]).catalog({**CONNECTION, "provider_code": "INGRESSO"}, threading.Event())
+
+
+def test_ingresso_documented_no_upcoming_404_is_a_complete_empty_list():
+    def route(url, *_):
+        if "/nowplaying/" in url:
+            return []
+        raise ProviderError("The provider request failed (HTTP 404).")
+    result = FixtureService(route, ingresso_partnerships=["warner"]).catalog({**CONNECTION, "provider_code": "INGRESSO"}, threading.Event())
+    assert result.movies == [] and result.warnings == []
+
+
+def test_ingresso_selected_check_never_fetches_any_global_catalog_or_theater_directory():
+    def route(url, *_):
+        assert "/sessions/event/m/" in url
+        return ingresso_route(url)
+    service = FixtureService(route)
+    result = service.showtimes({**CONNECTION, "provider_code": "INGRESSO"}, {"m"}, threading.Event())
+    assert len(result.showtimes) == 2 and len(service.calls) == 2
+    assert result.movies == [] and [row["id"] for row in result.theaters] == ["t"]
+
+
+def test_is_catalog_uses_500_page_size_server_cap_current_filters_and_forward_window():
+    def route(url, *_):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        assert query["include_outdated"] == ["false"] and query["include_upcomings"] == ["false"]
+        assert "release_date_from" not in query
+        start, end = (providers.datetime.fromisoformat(query[key][0]) for key in ("time_from", "time_to"))
+        assert (end.astimezone(providers.ZoneInfo("Europe/London")).date() - start.astimezone(providers.ZoneInfo("Europe/London")).date()).days == 30
+        if "page_token" not in query:
+            assert query["page_size"] == ["500"]
+            return {"movies": [{"id": "old", "title": "Revival", "release_dates": {"GB": [{"date": "1920-01-01"}, {"date": "2099-01-01"}]}}],
+                    "meta_info": {"next_page_token": "next", "max_page_size": 200, "total_count": 2}}
+        assert query["page_size"] == ["200"]
+        return {"movies": [{"id": "unknown", "title": "Unknown release"}], "meta_info": {"max_page_size": 200, "total_count": 2}}
+    result = FixtureService(route).catalog({"provider_code": "IS", "country_code": "UK", "provider_country_code": "GB",
+        "timezone": "Europe/London", "catalog_window_days": 30}, threading.Event())
+    assert result.movies[0]["release"] == "1920-01-01" and result.movies[1]["release"] is None
+
+
+@pytest.mark.parametrize("window", [None, 0])
+def test_is_catalog_defaults_to_unlimited_future_horizon(window):
+    def route(url, *_):
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        assert "time_to" not in query and "release_date_from" not in query
+        assert query["page_size"] == ["500"] and query["time_from"]
+        return {"movies": []}
+    assert FixtureService(route).catalog({"provider_code": "IS", "country_code": "AU", "catalog_window_days": window}, threading.Event()).movies == []
+
+
+def test_is_explicit_check_does_not_apply_catalog_window_or_release_age():
+    def route(url, *_):
+        if "/chains?" in url or "/cinemas?" in url:
+            return []
+        assert "/showtimes?" in url
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        assert "time_to" not in query and "release_date_from" not in query
+        return [{"id": "s", "movie_id": "old", "cinema_id": "t", "start_at": "2099-01-01T15:00:00Z"}]
+    result = FixtureService(route).showtimes({**CONNECTION, "provider_code": "IS", "catalog_window_days": 1}, {"old"}, threading.Event())
+    assert len(result.showtimes) == 1
+
+
+def test_is_missing_continuation_with_larger_declared_total_is_failure():
+    service = FixtureService(lambda *_: {"movies": [{"id": "m", "title": "Movie"}], "meta_info": {"total_count": 50}})
+    with pytest.raises(ProviderError, match="incomplete"):
+        service.catalog({"provider_code": "IS", "country_code": "GB"}, threading.Event())
+
+
+@pytest.mark.parametrize("value,expected", [
+    ({"localDate": "2026-10-26T00:00:00"}, "2026-10-26"),
+    ([{"date": "2026-10-26"}, {"date": "2001-01-02"}], "2001-01-02"),
+    ({"year": 2000, "month": 1, "day": 2}, "2000-01-02"),
+    ("20261026", "2026-10-26"), ([], None), ({"localDate": "invalid"}, None),
+])
+def test_provider_release_dates_accept_real_and_legacy_shapes(value, expected):
+    assert providers._date(value) == expected
+
+
+@pytest.mark.parametrize("movies", [[{"id": "m"}], [None], [{"title": "Film"}], [{"id": True, "title": "Film"}],
+                                  [{"id": "m", "title": "Film"}, {"id": "m", "title": "Film"}]])
+def test_is_malformed_or_duplicate_catalog_entries_cannot_be_a_complete_refresh(movies):
+    service = FixtureService(lambda *_: {"movies": movies})
+    with pytest.raises(ProviderError):
+        service.catalog({"provider_code": "IS", "country_code": "AU"}, threading.Event())
+
+
+@pytest.mark.parametrize("body", [b"", b" \r\n\t"])
+def test_blank_200_is_not_mistaken_for_an_authoritative_empty_catalog(monkeypatch, body):
+    service = transport(monkeypatch, lambda *_: Response(body))
+    with pytest.raises(ProviderError, match="empty response"):
+        service._fetch_json("https://fixture.invalid/", threading.Event())
+
+
+def test_documented_204_and_valid_json_empty_lists_remain_supported(monkeypatch):
+    response = Response(b"")
+    response.status = 204
+    service = transport(monkeypatch, lambda *_: response)
+    assert service._fetch_json("https://fixture.invalid/", threading.Event()) == []
+    service = transport(monkeypatch, lambda *_: Response(b"[]"))
+    assert service._fetch_json("https://fixture.invalid/", threading.Event()) == []
+
+
+def test_ingresso_error_envelope_with_count_zero_is_not_a_valid_empty_list():
+    with pytest.raises(ProviderError):
+        ProviderService._ingresso_page({"error": "unavailable", "count": 0})

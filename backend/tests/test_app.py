@@ -638,3 +638,82 @@ def test_theater_provider_identity_enrichment_query_count_does_not_grow_per_row(
         event.remove(env.engine, "before_cursor_execute", record)
     # Authentication, canonical count, canonical page, one association query.
     assert first == second == 4
+
+
+def test_optional_is_catalog_window_is_validated_exposed_and_nullable(env):
+    login(env)
+    response = env.client.post("/api/connections", json={"country_code": "AU", "provider_code": "IS",
+        "provider_country_code": "AU", "timezone": "Australia/Sydney", "catalog_window_days": 30})
+    assert response.status_code == 200, response.text
+    identifier = response.json()["id"]
+    assert response.json()["catalog_window_days"] == 30
+    assert next(row for row in env.client.get("/api/bootstrap").json()["connections"] if row["id"] == identifier)["catalog_window_days"] == 30
+    for value, expected in ((None, None), (0, None), (1, 1), (3650, 3650)):
+        response = env.client.patch(f"/api/connections/{identifier}", json={"catalog_window_days": value})
+        assert response.status_code == 200 and response.json()["catalog_window_days"] == expected
+    for value in (-1, 3651, True, 1.2, "30"):
+        assert env.client.patch(f"/api/connections/{identifier}", json={"catalog_window_days": value}).status_code == 400
+    assert env.client.patch("/api/connections/1", json={"catalog_window_days": 30}).status_code == 400
+    assert env.provider.calls == []
+
+
+def test_explicit_archived_provider_movie_can_still_load_fresh_sessions(env):
+    login(env)
+    with env.app.state.sessions() as db:
+        db.get(ProviderMovie, 301).active = False
+        db.get(MovieGroup, 201).active = False
+        db.commit()
+    assert env.client.get("/api/provider-movies?q=ing-m&exact=true").json()["total"] == 0
+    assert env.client.get("/api/provider-movies?q=ing-m&exact=true&include_inactive=true").json()["total"] == 1
+    identifier = start_check(env, provider_ids=[301])
+    assert ("check", "INGRESSO", ["ing-m"]) in env.provider.calls
+    assert env.client.get(f"/api/checks/{identifier}").json()["total"] == 3
+
+
+def test_malformed_is_catalog_preserves_existing_active_ids_and_manual_groups(env):
+    from app.providers import ProviderService
+    login(env)
+    with env.app.state.sessions() as db:
+        db.add(Connection(id=3, country_code="AU", provider_code="IS", provider_country_code="AU", timezone="Australia/Sydney"))
+        db.add(MovieGroup(id=204, country_code="AU", name="Existing IS movie"))
+        db.flush()
+        db.add(ProviderMovie(id=304, connection_id=3, external_id="existing-id", name="Existing IS movie",
+                             group_id=204, active=True, manually_grouped=True))
+        db.commit()
+    service = ProviderService(SimpleNamespace(is_api_key="fixture-key", request_timeout=20))
+    service._fetch_json = lambda *_args, **_kwargs: {"movies": [{"id": "existing-id"}], "meta_info": {"total_count": 1}}
+    env.provider.catalog = service.catalog
+    refresh(env, [3], "failed")
+    with env.app.state.sessions() as db:
+        movie = db.get(ProviderMovie, 304)
+        assert movie.active is True and movie.group_id == 204 and movie.manually_grouped is True
+        assert db.get(MovieGroup, 204).active is True
+
+
+def test_incomplete_ingresso_pagination_preserves_existing_catalog(env):
+    from app.providers import ProviderService
+    login(env)
+    service = ProviderService(SimpleNamespace(ingresso_partnerships=["warner"], request_timeout=20))
+    service._fetch_json = lambda *_args, **_kwargs: {"items": [{"id": "ing-m", "title": "Film"}], "count": 1}
+    env.provider.catalog = service.catalog
+    refresh(env, [1], "failed")  # A non-advancing repeated page, never full archive fallback.
+    with env.app.state.sessions() as db:
+        assert db.get(ProviderMovie, 301).active is True and db.get(ProviderMovie, 303).active is True
+        assert db.get(ProviderMovie, 301).group_id == 201 and db.get(ProviderMovie, 301).manually_grouped is True
+
+
+def test_archived_movie_picker_excludes_disabled_connections_without_losing_admin_reference_access(env):
+    login(env)
+    with env.app.state.sessions() as db:
+        db.get(Connection, 1).enabled = False
+        db.get(ProviderMovie, 301).active = False
+        db.commit()
+    for suffix in ("", "&include_inactive=true"):
+        response = env.client.get("/api/provider-movies?q=ing-m&exact=true" + suffix)
+        assert response.status_code == 200 and response.json()["total"] == 0
+    assert env.client.get("/api/provider-movies?include_inactive=true").json()["total"] == 1
+    references = env.client.get("/api/movie-groups?country=BR&include_inactive=true&q=ing-m&exact=true").json()
+    assert references["total"] == 1 and references["items"][0]["provider_ids"][0]["id"] == 301
+    response = env.client.post("/api/checks", json={"country_code": "BR", "provider_movie_ids": [301]})
+    assert response.status_code == 400
+    assert env.provider.calls == []

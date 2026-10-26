@@ -9,11 +9,12 @@ SCHEMA_LOCK = 732964103
 
 def _initialize(connection):
     Base.metadata.create_all(bind=connection)
-    columns = {column["name"] for column in inspect(connection).get_columns("provider_movies")}
-    if "url_key" not in columns:
-        # Fixed table/column names, never user-supplied SQL. Existing identifiers,
-        # assignments, rows and indexes are deliberately left untouched.
-        connection.execute(text("ALTER TABLE provider_movies ADD COLUMN url_key VARCHAR(500)"))
+    for table, column, sql_type in (("provider_movies", "url_key", "VARCHAR(500)"),
+                                    ("connections", "catalog_window_days", "INTEGER")):
+        columns = {item["name"] for item in inspect(connection).get_columns(table)}
+        if column not in columns:
+            # Fixed identifiers, never user-supplied SQL; existing data is untouched.
+            connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
 
 
 def initialize_schema(engine):

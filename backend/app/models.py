@@ -33,6 +33,7 @@ class Connection(Base):
     last_status: Mapped[str] = mapped_column(String(30), default="not_refreshed")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     movie_count: Mapped[int] = mapped_column(Integer, default=0)
+    catalog_window_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class MovieGroup(Base):

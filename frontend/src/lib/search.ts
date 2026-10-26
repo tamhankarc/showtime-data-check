@@ -80,13 +80,27 @@ export function providerMovieChoice(movie: {
   url_key?: string | null;
   original_name?: string;
   group_name?: string;
+  active?: boolean;
 }): Choice {
   return {
     value: String(movie.id),
     label: providerMovieLabel(movie),
-    detail: `${movie.provider_code}${movie.original_name && movie.original_name !== movie.name ? ` · ${movie.original_name}` : ""}${movie.group_name && movie.group_name !== movie.name ? ` · Group: ${movie.group_name}` : ""}`,
+    detail: `${movie.provider_code}${movie.active === false ? " · Archived" : movie.active === true ? " · Available" : ""}${movie.original_name && movie.original_name !== movie.name ? ` · ${movie.original_name}` : ""}${movie.group_name && movie.group_name !== movie.name ? ` · Group: ${movie.group_name}` : ""}`,
     search: `${providerMovieIdentifier(movie)} ${movie.original_name || ""} ${movie.group_name || ""}`,
   };
+}
+export function preserveSelectedChoices(
+  options: Choice[],
+  selected: string[],
+  cache: Map<string, Choice>,
+  seeds: Choice[] = [],
+): Choice[] {
+  const shown = new Map(options.map((option) => [option.value, option]));
+  for (const id of selected) {
+    const choice = cache.get(id) || seeds.find((option) => option.value === id);
+    if (choice) shown.set(id, choice);
+  }
+  return [...shown.values()];
 }
 export function recordSearchValues(value: unknown): string[] {
   if (value === null || value === undefined) return [];

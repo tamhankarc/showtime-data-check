@@ -7,6 +7,7 @@ interface ReferenceFilters {
   provider: string;
   status: string;
   showInactiveTheaters: boolean;
+  includeArchivedMovies?: boolean;
 }
 
 export function referenceListQuery(filters: ReferenceFilters): URLSearchParams {
@@ -20,6 +21,8 @@ export function referenceListQuery(filters: ReferenceFilters): URLSearchParams {
   if (filters.provider) params.set("provider", filters.provider);
   if (filters.status) params.set("status", filters.status);
   if (filters.resource === "theaters" && filters.showInactiveTheaters)
+    params.set("include_inactive", "true");
+  if (filters.resource === "movie-groups" && filters.includeArchivedMovies)
     params.set("include_inactive", "true");
   return params;
 }

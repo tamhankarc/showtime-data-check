@@ -197,13 +197,13 @@ def create_app(settings=None, provider_service=None, engine=None):
     def provider_movies(country: str | None = None, provider: str | None = None, q: str = "",
                         exact: bool = False, include_inactive: bool = False, page: int = 1, page_size: int = 200,
                         db=Depends(db_session), current=Depends(user)):
-        statement = select(models.ProviderMovie, models.Connection, models.MovieGroup).join(models.Connection, models.ProviderMovie.connection_id == models.Connection.id).join(models.MovieGroup, models.ProviderMovie.group_id == models.MovieGroup.id)
+        statement = select(models.ProviderMovie, models.Connection, models.MovieGroup).join(models.Connection, models.ProviderMovie.connection_id == models.Connection.id).join(models.MovieGroup, models.ProviderMovie.group_id == models.MovieGroup.id).where(models.Connection.enabled.is_(True))
         if country:
             statement = statement.where(models.Connection.country_code == country)
         if provider and provider != "all":
             statement = statement.where(models.Connection.provider_code == provider)
         if not include_inactive:
-            statement = statement.where(models.ProviderMovie.active.is_(True), models.Connection.enabled.is_(True))
+            statement = statement.where(models.ProviderMovie.active.is_(True))
         search_columns = [models.ProviderMovie.name, models.ProviderMovie.original_name,
                           models.ProviderMovie.external_id, models.ProviderMovie.id, models.ProviderMovie.url_key,
                           models.MovieGroup.name, models.MovieGroup.id]
@@ -263,11 +263,11 @@ def create_app(settings=None, provider_service=None, engine=None):
         country = db.get(models.Country, payload.country_code)
         if not country or not country.enabled:
             raise HTTPException(400, "Select an enabled country.")
-        statement = select(models.ProviderMovie, models.Connection).join(models.Connection).where(models.Connection.country_code == country.code, models.Connection.enabled.is_(True), models.ProviderMovie.active.is_(True))
+        statement = select(models.ProviderMovie, models.Connection).join(models.Connection).where(models.Connection.country_code == country.code, models.Connection.enabled.is_(True))
         if payload.provider_movie_ids:
             statement = statement.where(models.ProviderMovie.id.in_(payload.provider_movie_ids))
         elif payload.movie_ids:
-            statement = statement.where(models.ProviderMovie.group_id.in_(payload.movie_ids))
+            statement = statement.where(models.ProviderMovie.group_id.in_(payload.movie_ids), models.ProviderMovie.active.is_(True))
         else:
             raise HTTPException(400, "Select at least one available provider movie.")
         if payload.provider_codes and "all" not in payload.provider_codes:
@@ -333,7 +333,7 @@ def create_app(settings=None, provider_service=None, engine=None):
     resources = {"countries": models.Country, "connections": models.Connection, "theaters": models.Theater, "provider-theaters": models.ProviderTheater, "format-mappings": models.FormatMapping, "movie-format-overrides": models.MovieFormatOverride}
     allowed_fields = {
         "countries": {"code", "name", "timezone", "enabled"},
-        "connections": {"country_code", "provider_code", "provider_country_code", "timezone", "enabled"},
+        "connections": {"country_code", "provider_code", "provider_country_code", "timezone", "enabled", "catalog_window_days"},
         "theaters": {"country_code", "name", "address", "city", "region", "postal_code", "latitude", "longitude", "website", "chain", "timezone", "active"},
         "provider-theaters": {"theater_id", "review_status"},
         "format-mappings": {"country_code", "provider_code", "raw_format", "published_format", "audio_language", "subtitle_language", "is_dubbed", "is_subtitled", "is_luxury"},
@@ -368,6 +368,13 @@ def create_app(settings=None, provider_service=None, engine=None):
                 raise HTTPException(400, "Select a supported provider.")
             if (value.get("country_code") == "BR") != (value.get("provider_code") != "IS"):
                 raise HTTPException(400, "Brazil uses Ingresso, Cinemark or Velox; other countries use IS.")
+            if "catalog_window_days" in payload:
+                window = payload["catalog_window_days"]
+                if window is not None and (isinstance(window, bool) or not isinstance(window, int) or not 0 <= window <= 3650):
+                    raise HTTPException(400, "Catalog window must be an integer from 1 to 3650 days, or blank/0 for unlimited.")
+                if window and value.get("provider_code") != "IS":
+                    raise HTTPException(400, "Catalog windows apply only to IS catalog discovery.")
+                payload["catalog_window_days"] = window or None
         if resource == "theaters":
             if existing and value.get("country_code") != existing.country_code:
                 raise HTTPException(400, "An existing theater's country cannot be changed. Create the correct country-specific theater instead.")

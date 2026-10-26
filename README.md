@@ -25,8 +25,11 @@ Stop the frontend/backend with Ctrl+C in their windows. `docker compose stop pos
 ## Behavior
 
 - Pages never fetch provider sessions on entry. Select Country and Movie, then **Load data**.
-- Brazil supports multiple provider movie IDs, including English/localized/variant names. Options display `Name (provider ID)` and provider identity.
+- Brazil supports multiple provider movie IDs, including English/localized/variant names. Ingresso options display `Name (urlKey)`; other providers display `Name (provider ID)`. Numeric Ingresso IDs remain unchanged internally for session requests and assignments.
 - Provider Movies reads the stored catalog; catalog refresh is a separate explicit action.
+- Ingresso catalog refreshes combine fully checked, paginated nationwide now-playing data with coming-soon data for every configured partnership. They do not download the historical event archive or the theater directory. Loading selected Ingresso movies requests only their fresh sessions, without repeating catalog discovery.
+- IS uses 500-row pages and current-showtime filters. Each IS connection can optionally set a forward catalog window in days; blank means unlimited. This affects discovery only, never an explicit movie check. Release age does not exclude a movie with current screenings.
+- Old movie records, provider IDs and manual groups are retained when they leave a complete discovery catalog. Use **Include archived movies** on Provider Movies, the movie picker or Brazil groups to find them. Explicit archived-ID checks remain available for enabled countries/providers. Failed, malformed or incomplete catalogs do not archive existing availability.
 - Velox catalog discovery combines its release window with theater schedules for the next 120 days; it does not retain those schedule bodies.
 - Confirmed theater assignments and manual movie groups survive refresh. New records remain Needs Review; provider names and IDs are preserved.
 - Generic a-z/1-9 PNGs only; an initial tile handles unavailable generic assets.

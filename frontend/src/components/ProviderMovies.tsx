@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { api, items } from "@/lib/api";
+import { providerMoviesEndpoint } from "@/lib/catalog";
 import { providerMovieIdentifier, providerMovieLabel } from "@/lib/search";
 import type { Bootstrap, ListPage, ProviderMovieRecord } from "@/lib/types";
 import { Combobox } from "./Combobox";
@@ -10,6 +11,7 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
   const [provider, setProvider] = useState("all");
   const [search, setSearch] = useState("");
   const [exact, setExact] = useState(false);
+  const [includeArchivedMovies, setIncludeArchivedMovies] = useState(false);
   const [page, setPage] = useState(1);
   const [movies, setMovies] = useState<ProviderMovieRecord[]>([]);
   const [total, setTotal] = useState(0);
@@ -26,7 +28,7 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
     const timer = setTimeout(
       () =>
         api<ListPage<ProviderMovieRecord>>(
-          `provider-movies?country=${encodeURIComponent(country)}&provider=${encodeURIComponent(provider)}&q=${encodeURIComponent(search)}&exact=${exact}&page=${page}&page_size=50`,
+          `${providerMoviesEndpoint(country, provider, includeArchivedMovies)}&q=${encodeURIComponent(search)}&exact=${exact}&page=${page}&page_size=50`,
           { signal: controller.signal },
         )
           .then((value) => {
@@ -45,7 +47,7 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [country, provider, search, exact, page]);
+  }, [country, provider, search, exact, page, includeArchivedMovies]);
   return (
     <>
       <div className="page-heading">
@@ -56,6 +58,10 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
             All available provider movies and identifiers. Ingresso uses its
             urlKey; other providers use their movie ID. Refresh catalogs from
             Home.
+          </p>
+          <p>
+            Archived IDs remain stored and can be included below. Their status
+            does not imply that the film is old or has no current screenings.
           </p>
         </div>
       </div>
@@ -120,6 +126,19 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
             />
             Exact match
           </label>
+          {country && (
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={includeArchivedMovies}
+                onChange={(event) => {
+                  setIncludeArchivedMovies(event.target.checked);
+                  setPage(1);
+                }}
+              />
+              Include archived movies
+            </label>
+          )}
         </div>
       </section>
       {error && <ErrorNotice message={error} />}
@@ -165,7 +184,7 @@ export function ProviderMovies({ data }: { data: Bootstrap }) {
                       <td>{movie.release_date || "—"}</td>
                       <td>
                         <Status
-                          value={movie.active ? "available" : "inactive"}
+                          value={movie.active ? "available" : "archived"}
                         />
                       </td>
                     </tr>

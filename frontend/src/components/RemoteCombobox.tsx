@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, items } from "@/lib/api";
 import type { ListPage, RecordData } from "@/lib/types";
-import type { Choice } from "@/lib/search";
+import { preserveSelectedChoices, type Choice } from "@/lib/search";
 import { Combobox } from "./Combobox";
 interface Props {
   endpoint: string | null;
@@ -15,6 +15,7 @@ interface Props {
   disabled?: boolean;
   required?: boolean;
   placeholder?: string;
+  cacheScope?: string | null;
 }
 export function RemoteCombobox({
   endpoint,
@@ -27,6 +28,7 @@ export function RemoteCombobox({
   disabled,
   required,
   placeholder,
+  cacheScope,
 }: Props) {
   const [query, setQuery] = useState("");
   const [options, setOptions] = useState<Choice[]>([]);
@@ -38,17 +40,19 @@ export function RemoteCombobox({
   const selected = Array.isArray(value) ? value : value ? [value] : [];
   const mapper = useRef(mapRecord);
   mapper.current = mapRecord;
+  const scope = cacheScope === undefined ? endpoint : cacheScope;
   useEffect(() => {
     cache.current.clear();
     recordCache.current.clear();
     setOptions([]);
     setQuery("");
-  }, [endpoint]);
+  }, [scope]);
   useEffect(() => {
     if (!endpoint) return;
     const controller = new AbortController();
     setLoading(true);
     setError("");
+    setOptions([]);
     const timer = setTimeout(
       () => {
         const separator = endpoint.includes("?") ? "&" : "?";
@@ -80,19 +84,18 @@ export function RemoteCombobox({
       controller.abort();
     };
   }, [endpoint, query]);
-  const shown = new Map(options.map((option) => [option.value, option]));
-  for (const item of selected) {
-    const option =
-      cache.current.get(item) ||
-      seedOptions.find((option) => option.value === item);
-    if (option) shown.set(item, option);
-  }
+  const shown = preserveSelectedChoices(
+    options,
+    selected,
+    cache.current,
+    seedOptions,
+  );
   return (
     <div className="remote-combo">
       <Combobox
         label={label}
         value={value}
-        options={[...shown.values()]}
+        options={shown}
         multiple={multiple}
         onChange={(values) =>
           onChange(

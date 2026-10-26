@@ -199,3 +199,15 @@ def test_other_providers_do_not_accept_ingresso_only_url_keys(db):
     connection = db.get(Connection, 1)
     upsert_movies(db, connection, [{"id": "velox-id", "name": "Velox film", "url_key": "not-an-ingresso-key"}])
     assert db.scalar(select(ProviderMovie)).url_key is None
+
+
+def test_missing_or_invalid_release_metadata_does_not_erase_known_date(db):
+    connection = db.get(Connection, 2)
+    upsert_movies(db, connection, [{"id": "old", "name": "Film", "release": "2000-01-02"}])
+    movie = db.scalar(select(ProviderMovie))
+    identity = (movie.id, movie.group_id)
+    for item in ({"id": "old", "name": "Film"}, {"id": "old", "name": "Film", "release": None},
+                 {"id": "old", "name": "Film", "release": "invalid"}):
+        upsert_movies(db, connection, [item])
+        assert movie.release_date.isoformat() == "2000-01-02"
+        assert (movie.id, movie.group_id) == identity

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, localTimestamp, send } from "@/lib/api";
 import { apiUrl } from "@/lib/routes";
+import { providerMoviesEndpoint } from "@/lib/catalog";
 import {
   providerMovieChoice,
   safeExternalUrl,
@@ -51,6 +52,7 @@ export function Results({
   const [country, setCountry] = useState("");
   const [provider, setProvider] = useState("all");
   const [movieIds, setMovieIds] = useState<string[]>([]);
+  const [includeArchivedMovies, setIncludeArchivedMovies] = useState(false);
   const [checkId, setCheckId] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [result, setResult] = useState<CheckResult | null>(null);
@@ -308,6 +310,7 @@ export function Results({
             onChange={(values) => {
               reset();
               setCountry(values[0] || "");
+              setIncludeArchivedMovies(false);
               setProvider("all");
               setMovieIds([]);
             }}
@@ -332,8 +335,15 @@ export function Results({
             <RemoteCombobox
               endpoint={
                 country
-                  ? `provider-movies?country=${encodeURIComponent(country)}&provider=${encodeURIComponent(provider)}`
+                  ? providerMoviesEndpoint(
+                      country,
+                      provider,
+                      includeArchivedMovies,
+                    )
                   : null
+              }
+              cacheScope={
+                country ? `movie-picker:${country}:${provider}` : null
               }
               label={country === "BR" ? "Movies / provider IDs" : "Movie"}
               required
@@ -361,6 +371,26 @@ export function Results({
               : "Load data"}
           </button>
         </div>
+        {country && (
+          <div className="panel-note">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={includeArchivedMovies}
+                disabled={working}
+                onChange={(event) =>
+                  setIncludeArchivedMovies(event.target.checked)
+                }
+              />
+              Include archived movies
+            </label>
+            <small>
+              Archived means absent from the latest discovery catalog, not
+              deleted. Existing selections are retained; explicit checks can
+              request fresh data for these IDs.
+            </small>
+          </div>
+        )}
         <div className="panel-note">
           {country === "BR"
             ? "Select all English/localized movie entries or variant IDs that belong together. They are fetched in one check; the catalog itself is not changed."

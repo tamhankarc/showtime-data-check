@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, items, send } from "@/lib/api";
 import { providerMovieIdentifier, providerMovieLabel } from "@/lib/search";
 import { referenceListQuery } from "@/lib/reference";
+import { catalogWindowValue } from "@/lib/catalog";
 import type { Bootstrap, ListPage, RecordData } from "@/lib/types";
 import { Combobox } from "./Combobox";
 import { Empty, ErrorNotice, GenericLogo, Pagination, Status } from "./Shared";
@@ -63,6 +64,7 @@ export function Management({
   const [exact, setExact] = useState(false);
   const [status, setStatus] = useState("");
   const [showInactiveTheaters, setShowInactiveTheaters] = useState(false);
+  const [includeArchivedMovies, setIncludeArchivedMovies] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -85,6 +87,7 @@ export function Management({
     setSuccess("");
     setStatus("");
     setShowInactiveTheaters(false);
+    setIncludeArchivedMovies(false);
   }, [page]);
   const load = useCallback(async () => {
     const generation = ++loadSequence.current;
@@ -99,6 +102,7 @@ export function Management({
       provider,
       status,
       showInactiveTheaters,
+      includeArchivedMovies,
     });
     try {
       const loaded = await api<ListPage<RecordData>>(`${resource}?${params}`);
@@ -120,6 +124,7 @@ export function Management({
     provider,
     status,
     showInactiveTheaters,
+    includeArchivedMovies,
   ]);
   useEffect(() => {
     const timer = setTimeout(
@@ -163,6 +168,7 @@ export function Management({
                 provider_country_code: "",
                 timezone,
                 enabled: true,
+                catalog_window_days: null,
               }
             : resource === "theaters"
               ? {
@@ -268,6 +274,10 @@ export function Management({
             "is_subtitled",
             "is_luxury",
           ].map((key) => [key, editing[key]]),
+        );
+      if (resource === "connections" && editing.provider_code === "IS")
+        body.catalog_window_days = catalogWindowValue(
+          editing.catalog_window_days,
         );
       const existing = existingRecord;
       const id = resource === "countries" ? editing.code : editing.id;
@@ -458,6 +468,19 @@ export function Management({
               Show inactive theaters
             </label>
           )}
+          {resource === "movie-groups" && (
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={includeArchivedMovies}
+                onChange={(event) => {
+                  setIncludeArchivedMovies(event.target.checked);
+                  setCurrentPage(1);
+                }}
+              />
+              Include archived movies
+            </label>
+          )}
           {resource !== "countries" && (
             <Combobox
               label="Country"
@@ -612,6 +635,9 @@ export function Management({
                                 <small key={text(id.id)}>
                                   {providerMovieLabel(id)} ·{" "}
                                   {text(id.provider_code)}
+                                  {id.active === false
+                                    ? " · Archived"
+                                    : " · Available"}
                                 </small>
                               ),
                             )}
@@ -619,7 +645,7 @@ export function Management({
                           <td>
                             <Status
                               value={
-                                row.active === false ? "inactive" : "active"
+                                row.active === false ? "archived" : "active"
                               }
                             />
                           </td>
@@ -797,18 +823,21 @@ export function Management({
                     />
                     <span>
                       <strong>{providerMovieLabel(id)}</strong>
-                      <small>{text(id.provider_code)}</small>
+                      <small>
+                        {text(id.provider_code)}
+                        {id.active === false ? " · Archived" : " · Available"}
+                      </small>
                     </span>
                   </label>
                 ))}
               </div>
               <RemoteCombobox
-                endpoint={`movie-groups?country=${encodeURIComponent(text(editing.country_code))}`}
+                endpoint={`movie-groups?country=${encodeURIComponent(text(editing.country_code))}&include_inactive=true`}
                 label="Move to imported movie group"
                 value={targetGroup}
                 mapRecord={(row) => ({
                   value: text(row.id),
-                  label: `${text(row.name)} (#${text(row.id)})`,
+                  label: `${text(row.name)} (#${text(row.id)})${row.active === false ? " · Archived" : ""}`,
                   detail: ((row.provider_ids || []) as RecordData[])
                     .map(
                       (id) =>
@@ -898,6 +927,36 @@ export function Management({
                       value={editing.timezone}
                       onChange={(v) => field("timezone", v)}
                     />
+                    {editing.provider_code === "IS" && (
+                      <div className="field full-span">
+                        <label htmlFor="catalog-window-days">
+                          IS catalog window in days
+                        </label>
+                        <input
+                          id="catalog-window-days"
+                          type="number"
+                          min="1"
+                          max="3650"
+                          step="1"
+                          placeholder="Unlimited (leave blank)"
+                          value={
+                            editing.catalog_window_days == null ||
+                            Number(editing.catalog_window_days) === 0
+                              ? ""
+                              : text(editing.catalog_window_days)
+                          }
+                          onChange={(event) =>
+                            field("catalog_window_days", event.target.value)
+                          }
+                        />
+                        <small>
+                          Leave blank for unlimited discovery. Limits movie
+                          discovery only; explicit movie checks remain
+                          unrestricted. Older films with current screenings are
+                          not filtered by release date.
+                        </small>
+                      </div>
+                    )}
                     <CheckField
                       label="Enabled"
                       checked={editing.enabled !== false}

@@ -77,7 +77,13 @@ def _url(value: Any) -> str | None:
 
 
 def _date(value: Any) -> str | None:
+    if isinstance(value, (list, tuple)):
+        days = [parsed for item in value if (parsed := _date(item)) is not None]
+        return min(days) if days else None
     if isinstance(value, dict):
+        for key in ("localDate", "date", "release_date", "local_date"):
+            if value.get(key) is not None and (parsed := _date(value[key])) is not None:
+                return parsed
         try:
             return date(int(value["year"]), int(value["month"]), int(value["day"])).isoformat()
         except (ValueError, TypeError, KeyError):
@@ -220,6 +226,7 @@ class ProviderService:
             deadline, delay = time.monotonic() + budget, 2 ** attempt
             try:
                 with opener.open(request, timeout=budget) as response:
+                    status = getattr(response, "status", 200) or 200
                     if response.headers.get("Content-Length"):
                         try:
                             if int(response.headers["Content-Length"]) > MAX_RESPONSE_BYTES:
@@ -245,7 +252,11 @@ class ProviderService:
                         chunks.append(chunk)
                     data = b"".join(chunks)
                 self._check(cancel)
-                return json.loads(data) if data.strip() else []
+                if not data.strip():
+                    if status == 204:
+                        return []
+                    raise ProviderError("The provider returned an empty response instead of JSON.")
+                return json.loads(data)
             except urllib.error.HTTPError as error:
                 status = error.code
                 retry_after = error.headers.get("Retry-After") if error.headers else None
@@ -356,9 +367,9 @@ class ProviderService:
         api_key = _text(getattr(self.settings, "is_api_key", ""))
         if not api_key:
             raise ProviderError("The IS API credential has not been configured.")
-        parameters = {**parameters, "page_size": 100}
+        parameters = {**parameters, "page_size": 500}
         url = IS_BASE + path + "?" + urllib.parse.urlencode(parameters)
-        output, visited = [], set()
+        output, visited, catalog_ids = [], set(), set()
         for _ in range(MAX_PAGES):
             self._check(cancel)
             if url in visited:
@@ -373,11 +384,28 @@ class ProviderService:
                 raise ProviderError("The IS API returned an invalid list response.")
             if not isinstance(values, list):
                 raise ProviderError("The IS API returned an invalid list response.")
+            if path == "/movies":
+                for item in values:
+                    if not isinstance(item, dict):
+                        raise ProviderError("The IS API returned an invalid catalog entry.")
+                    identifier, name = item.get("id"), item.get("title") or item.get("name")
+                    if (isinstance(identifier, bool) or not isinstance(identifier, (str, int))
+                            or not _text(identifier) or not isinstance(name, str) or not name.strip()):
+                        raise ProviderError("The IS API returned an incomplete catalog entry.")
+                    identifier = _text(identifier)
+                    if identifier in catalog_ids:
+                        raise ProviderError("The IS API repeated a movie during catalog pagination.")
+                    catalog_ids.add(identifier)
             output.extend(value for value in values if isinstance(value, dict))
             if len(output) > MAX_RECORDS:
                 raise ProviderError("The selected IS data exceeds the supported record limit.")
             meta = payload.get("meta_info", payload.get("pagination", {})) if isinstance(payload, dict) else {}
             meta = meta if isinstance(meta, dict) else {}
+            cap = meta.get("max_page_size")
+            if cap is not None:
+                if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+                    raise ProviderError("The IS API returned an invalid pagination limit.")
+                parameters["page_size"] = min(500, cap)
             next_url, token = meta.get("next_page_url") or meta.get("next"), meta.get("next_page_token")
             if next_url:
                 candidate = urllib.parse.urljoin(url, str(next_url))
@@ -386,11 +414,16 @@ class ProviderService:
                         or parsed.port not in {None, 443} or parsed.username or parsed.password
                         or parsed.fragment or parsed.path != "/v5" + path):
                     raise ProviderError("The IS API returned an unsafe pagination destination.")
-                url = candidate
+                query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+                query["page_size"] = parameters["page_size"]
+                url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(query), ""))
             elif token:
                 parameters["page_token"] = str(token)
                 url = IS_BASE + path + "?" + urllib.parse.urlencode(parameters)
             else:
+                total = meta.get("total_count")
+                if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < len(output) or total > len(output)):
+                    raise ProviderError("The IS API returned an incomplete or inconsistent catalog page.")
                 return output
         raise ProviderError("The IS API exceeded the supported pagination limit.")
 
@@ -398,7 +431,19 @@ class ProviderService:
         country = _text(connection.get("provider_country_code") or connection.get("country_code"))
         result = ProviderResult()
         if selected is None:
-            for item in self._is_items("/movies", {"countries": country, "fields": "id,title,release_dates"}, cancel):
+            zones = {str(self._timezone(connection))}
+            for external_id, zone in (connection.get("theater_timezones") or {}).items():
+                zones.add(str(self._timezone(connection, external_id, zone)))
+            midnights = [datetime.combine(datetime.now(ZoneInfo(zone)).date(), datetime.min.time(), ZoneInfo(zone)) for zone in zones]
+            parameters = {"countries": country, "fields": "id,title,release_dates",
+                          "include_outdated": "false", "include_upcomings": "false",
+                          "time_from": min(midnights).astimezone(timezone.utc).isoformat()}
+            window = connection.get("catalog_window_days")
+            if window:
+                if isinstance(window, bool) or not isinstance(window, int) or not 1 <= window <= 3650:
+                    raise ProviderError("The IS catalog discovery window is invalid.")
+                parameters["time_to"] = max(value + timedelta(days=window) for value in midnights).astimezone(timezone.utc).isoformat()
+            for item in self._is_items("/movies", parameters, cancel):
                 releases = item.get("release_dates") or {}
                 release = item.get("release_date") or (releases.get(country) if isinstance(releases, dict) else None)
                 movie = _movie(item.get("id"), item.get("title") or item.get("name"), release,
@@ -485,30 +530,89 @@ class ProviderService:
             website=_url(item.get("siteURL") or item.get("nationalSiteURL")),
             timezone=str(ProviderService._timezone(connection, external_id, item.get("timezone"))))
 
+    @staticmethod
+    def _ingresso_page(payload: Any) -> tuple[list[dict], int | None]:
+        count = payload.get("count") if isinstance(payload, dict) else None
+        values = [] if isinstance(payload, dict) and "items" in payload and payload["items"] is None and count == 0 else _list(payload)
+        if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < len(values)):
+            raise ProviderError("Ingresso returned an inconsistent catalog count.")
+        if any(not isinstance(item, dict) or not _text(item.get("id")) or not _text(item.get("title") or item.get("originalTitle")) for item in values):
+            raise ProviderError("Ingresso returned an invalid catalog entry.")
+        return values, count
+
+    def _ingresso_current(self, partnership: str, cancel: Event) -> list[dict]:
+        """Page to an explicit empty page; short responses can be server-capped."""
+        suffix = urllib.parse.quote(partnership, safe="")
+        output, identifiers, signatures, skip, total_hint = [], set(), set(), 0, None
+        for _ in range(MAX_PAGES):
+            self._check(cancel)
+            url = f"{INGRESSO_BASE}/v0/templates/nowplaying/partnership/{suffix}?limit=500&skip={skip}"
+            values, count = self._ingresso_page(self._fetch_json(url, cancel))
+            if len(values) > 500:
+                raise ProviderError("Ingresso returned an oversized catalog page.")
+            if count is not None and count > len(values):
+                if total_hint is not None and total_hint != count:
+                    raise ProviderError("The Ingresso catalog changed during pagination. Retry the refresh.")
+                total_hint = count
+            if not values:
+                if total_hint is not None and len(output) != total_hint:
+                    raise ProviderError("The Ingresso catalog is incomplete. Existing availability was preserved.")
+                return output
+            page_ids = [_text(item["id"]) for item in values]
+            signature = tuple(page_ids)
+            if signature in signatures or any(value in identifiers for value in page_ids) or len(set(page_ids)) != len(page_ids):
+                raise ProviderError("Ingresso repeated a catalog page or event. Existing availability was preserved.")
+            signatures.add(signature)
+            identifiers.update(page_ids)
+            output.extend(values)
+            if len(output) > MAX_RECORDS:
+                raise ProviderError("The Ingresso catalog exceeds the supported record limit.")
+            skip += len(values)
+        raise ProviderError("The Ingresso catalog exceeded the supported pagination limit.")
+
+    def _ingresso_upcoming(self, partnership: str, cancel: Event) -> list[dict]:
+        suffix = urllib.parse.quote(partnership, safe="")
+        try:
+            payload = self._fetch_json(f"{INGRESSO_BASE}/v0/events/coming-soon/partnership/{suffix}?limit=500&includeCities=false", cancel)
+        except ProviderError as error:
+            if "HTTP 404" in str(error):  # Documented "no coming soon events".
+                return []
+            raise
+        values, count = self._ingresso_page(payload)
+        # This endpoint has no documented offset. Never silently treat a capped
+        # list as a complete country catalog, nor fall back to the huge archive.
+        if len(values) >= 500 or count is not None and count > len(values):
+            raise ProviderError("The Ingresso upcoming catalog may be truncated. Existing availability was preserved.")
+        return values
+
+    @staticmethod
+    def _remember_ingresso_movie(movies: dict, item: dict, partnership: str) -> None:
+        alias = {"url_key": _text(item.get("urlKey"))[:500] or None} if "urlKey" in item else {}
+        flags = {target: item[source] for source, target in (
+            ("isPlaying", "is_playing"), ("inPreSale", "in_pre_sale"),
+            ("isComingSoon", "is_coming_soon"), ("isReexhibition", "is_reexhibition"),
+            ("countIsPlaying", "count_is_playing")) if source in item}
+        movie = _movie(item.get("id"), item.get("title") or item.get("originalTitle"),
+                       item.get("premiereDate"), item.get("originalTitle"), partnerships=[partnership], **alias, **flags)
+        if not movie:
+            return
+        known = movies.setdefault(movie["id"], movie)
+        known["partnerships"] = sorted(set(known["partnerships"]) | {partnership})
+        for key, value in movie.items():
+            if key != "partnerships" and value is not None:
+                known[key] = value
+
     def _ingresso(self, connection: dict, selected: set[str] | None, cancel: Event) -> ProviderResult:
-        result, movies, theaters, available = ProviderResult(), {}, {}, {}
+        result, movies, theaters = ProviderResult(), {}, {}
         partnerships = self._partnerships()
-        for partnership in partnerships:
-            suffix = urllib.parse.quote(partnership, safe="")
-            for item in _list(self._fetch_json(f"{INGRESSO_BASE}/v0/events/partnership/{suffix}", cancel)):
-                alias = {"url_key": _text(item.get("urlKey"))[:500] or None} if "urlKey" in item else {}
-                movie = _movie(item.get("id"), item.get("title") or item.get("originalTitle"),
-                               item.get("premiereDate"), item.get("originalTitle"), partnerships=[partnership], **alias)
-                if movie:
-                    known = movies.setdefault(movie["id"], movie)
-                    known["partnerships"] = sorted(set(known["partnerships"]) | {partnership})
-                    if movie.get("url_key"):
-                        known["url_key"] = movie["url_key"]
-                    available.setdefault(movie["id"], set()).add(partnership)
-            for item in _list(self._fetch_json(f"{INGRESSO_BASE}/v0/theaters/partnership/{suffix}", cancel)):
-                theater = self._ingresso_theater(item, connection)
-                if theater["id"]:
-                    theaters[theater["id"]] = theater
-        result.movies = list(movies.values())
-        if selected is not None:
+        if selected is None:
+            for partnership in partnerships:
+                for item in self._ingresso_current(partnership, cancel) + self._ingresso_upcoming(partnership, cancel):
+                    self._remember_ingresso_movie(movies, item, partnership)
+        else:
             seen = set()
             for title_id in sorted(selected):
-                for partnership in sorted(available.get(title_id, set(partnerships))):
+                for partnership in partnerships:
                     url = f"{INGRESSO_BASE}/v0/sessions/event/{urllib.parse.quote(title_id, safe='')}/partnership/{urllib.parse.quote(partnership, safe='')}"
                     try:
                         groups = _list(self._fetch_json(url, cancel))
@@ -517,6 +621,9 @@ class ProviderService:
                             continue
                         raise
                     for group in groups:
+                        event = group.get("event") or group.get("movie")
+                        if isinstance(event, dict) and _text(event.get("id")) == title_id:
+                            self._remember_ingresso_movie(movies, event, partnership)
                         for item in group.get("theaters") or []:
                             self._check(cancel)
                             theater_id = _text(item.get("id"))
@@ -551,7 +658,7 @@ class ProviderService:
                                     if key is not None and key not in seen:
                                         seen.add(key)
                                         self._add_session(result, showing)
-        result.theaters = list(theaters.values())
+        result.movies, result.theaters = list(movies.values()), list(theaters.values())
         return result
 
     def _relay_headers(self, body: bytes) -> dict:
